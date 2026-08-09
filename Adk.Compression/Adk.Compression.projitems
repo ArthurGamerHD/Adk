@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <MSBuildAllProjects Condition="'$(MSBuildVersion)' == '' Or '$(MSBuildVersion)' &lt; '16.0'">$(MSBuildAllProjects);$(MSBuildThisFileFullPath)</MSBuildAllProjects>
+    <HasSharedItems>true</HasSharedItems>
+    <SharedGUID>3b928576-fdc2-4d82-9ff5-e65b218d37fb</SharedGUID>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="$(MSBuildThisFileDirectory)Compression\HuffmanTree.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Exceptions\ArgumentOutOfRangeException.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Exceptions\EndOfStreamException.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Exceptions\InvalidDataException.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Zip\Crc32.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Zip\MinimalZip.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Zip\Zlib.cs" />
+  </ItemGroup>
+</Project>

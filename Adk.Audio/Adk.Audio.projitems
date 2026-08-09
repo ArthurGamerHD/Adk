@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <MSBuildAllProjects Condition="'$(MSBuildVersion)' == '' Or '$(MSBuildVersion)' &lt; '16.0'">$(MSBuildAllProjects);$(MSBuildThisFileFullPath)</MSBuildAllProjects>
+    <HasSharedItems>true</HasSharedItems>
+    <SharedGUID>8a3cdcc5-4b55-4d87-a415-698a0e1ff06f</SharedGUID>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="$(MSBuildThisFileDirectory)Adpcm\MsAdpcmDecoder.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)PcmWaveData.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)PcmWaveReader.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Xwma\Decoder\MsbBitReader.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Xwma\Decoder\Wma2BitPacking.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Xwma\Decoder\Wma2Codebooks.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Xwma\Decoder\Wma2DecoderCore.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Xwma\Decoder\Wma2FastImdct.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Xwma\Decoder\Wma2HuffmanDecoder.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Xwma\Decoder\Wma2Pcm24kMonoSink.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Xwma\Decoder\XwmaPcmDecoder.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Xwma\Pcm24kMonoConverter.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Xwma\PcmAudioFormat.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Xwma\PcmWaveWriter.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Xwma\Wma2DecoderProfile.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Xwma\XwmaPacketReader.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Xwma\XwmaReader.cs" />
+  </ItemGroup>
+</Project>
