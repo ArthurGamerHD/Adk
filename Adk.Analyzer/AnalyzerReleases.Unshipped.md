@@ -6,3 +6,12 @@ Rule ID | Category | Severity | Notes
 --------|----------|----------|-------
 LcdMOD004 | LcdModCodeGenerator | Warning | Client and server code must not import each other
 LCDCMD001 | LcdModCodeGenerator | Error | Chat commands must be valid static methods
+ADKAPI001 | AdkApiProviderGenerator | Error | API provider and manager types must be partial
+ADKAPI002 | AdkApiProviderGenerator | Error | API providers must support generated GetApi members
+ADKAPI003 | AdkApiProviderGenerator | Error | API methods must map to BCL Func or Action delegates
+ADKAPI004 | AdkApiProviderGenerator | Error | API method ids must be unique within a provider
+ADKAPI005 | AdkApiProviderGenerator | Error | API methods require an ApiProvider owner
+ADKAPI006 | AdkApiProviderGenerator | Error | API managers must support generated session and registration members
+ADKAPI007 | AdkApiProviderGenerator | Error | API managers require a compatible root GetApi provider
+ADKAPI008 | AdkApiProviderGenerator | Error | API manager ports must be unique
+ADKAPI009 | AdkApiProviderGenerator | Error | Generated API client mirror names must be valid and unique
