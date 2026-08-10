@@ -7,8 +7,9 @@ using InvalidDataException = Adk.Compression.Exceptions.InvalidDataException;
 namespace Adk.Compression.Zip
 {
     /// <summary>
-    /// Managed zlib DEFLATE decoder.
-    /// Supports stored, fixed-Huffman, and dynamic-Huffman blocks.
+    /// Managed zlib/DEFLATE codec for whitelist-safe environments.
+    /// The decoder supports stored, fixed-Huffman, and dynamic-Huffman blocks.
+    /// The encoder currently writes fixed-Huffman blocks with LZ77 matching.
     /// </summary>
     public static class Zlib
     {
@@ -81,6 +82,20 @@ namespace Adk.Compression.Zip
 
         static readonly HuffmanTree<int> FixedDistanceTree =
             CreateFixedDistanceTree();
+
+        static readonly HuffmanCode[] FixedLiteralLengthCodes =
+            CreateFixedLiteralLengthCodes();
+
+        static readonly HuffmanCode[] FixedDistanceCodes =
+            CreateFixedDistanceCodes();
+
+        const int DeflateWindowSize = 32768;
+        const int DeflateWindowMask = DeflateWindowSize - 1;
+        const int DeflateHashSize = 32768;
+        const int DeflateHashMask = DeflateHashSize - 1;
+        const int DeflateMaxMatch = 258;
+        const int DeflateMinMatch = 3;
+        const int DeflateMaxChain = 128;
 
         /// <summary>
         /// Decodes a gzip member containing a DEFLATE stream.
@@ -158,6 +173,319 @@ namespace Adk.Compression.Zip
                 throw new InvalidDataException("gzip CRC-32 check failed.");
 
             return output;
+        }
+
+        /// <summary>
+        /// Encodes data as a raw RFC 1951 DEFLATE stream.
+        /// Uses LZ77 matching with the standard 32 KiB window and fixed
+        /// Huffman codes, avoiding System.IO.Compression for mod whitelists.
+        /// </summary>
+        public static byte[] DeflateRaw(byte[] data)
+        {
+            if (data == null)
+                throw new ArgumentNullException(nameof(data));
+
+            var writer = new BitWriter(
+                Math.Max(64, Math.Min(data.Length, 1024 * 1024)));
+
+            // A single final fixed-Huffman block. BFINAL=1, BTYPE=01.
+            writer.WriteBits(1, 1);
+            writer.WriteBits(1, 2);
+
+            int[] heads = new int[DeflateHashSize];
+            int[] previous = new int[DeflateWindowSize];
+
+            FillWithMinusOne(heads);
+            FillWithMinusOne(previous);
+
+            int position = 0;
+            while (position < data.Length)
+            {
+                DeflateMatch match = FindMatchAndInsert(
+                    data,
+                    position,
+                    heads,
+                    previous);
+
+                if (match.Length >= DeflateMinMatch)
+                {
+                    WriteLengthDistance(writer, match.Length, match.Distance);
+
+                    int end = position + match.Length;
+                    for (int insertPosition = position + 1;
+                         insertPosition < end;
+                         insertPosition++)
+                    {
+                        InsertDeflatePosition(
+                            data,
+                            insertPosition,
+                            heads,
+                            previous);
+                    }
+
+                    position = end;
+                }
+                else
+                {
+                    WriteFixedSymbol(
+                        writer,
+                        FixedLiteralLengthCodes,
+                        data[position]);
+
+                    position++;
+                }
+            }
+
+            WriteFixedSymbol(writer, FixedLiteralLengthCodes, 256);
+            return writer.ToArray();
+        }
+
+        static DeflateMatch FindMatchAndInsert(
+            byte[] data,
+            int position,
+            int[] heads,
+            int[] previous)
+        {
+            if (position > data.Length - DeflateMinMatch)
+                return default(DeflateMatch);
+
+            int hash = ComputeDeflateHash(data, position);
+            int candidate = heads[hash];
+
+            previous[position & DeflateWindowMask] = candidate;
+            heads[hash] = position;
+
+            int minimumCandidate = Math.Max(0, position - DeflateWindowSize);
+            int maximumLength = Math.Min(DeflateMaxMatch, data.Length - position);
+            int bestLength = 0;
+            int bestDistance = 0;
+            int chain = 0;
+
+            while (candidate >= minimumCandidate &&
+                   candidate >= 0 &&
+                   chain++ < DeflateMaxChain)
+            {
+                int distance = position - candidate;
+                if (distance <= 0 || distance > DeflateWindowSize)
+                    break;
+
+                if (data[candidate] == data[position] &&
+                    data[candidate + bestLength] == data[position + bestLength])
+                {
+                    int length = 0;
+                    while (length < maximumLength &&
+                           data[candidate + length] == data[position + length])
+                    {
+                        length++;
+                    }
+
+                    if (length > bestLength && length >= DeflateMinMatch)
+                    {
+                        bestLength = length;
+                        bestDistance = distance;
+
+                        if (bestLength == maximumLength)
+                            break;
+                    }
+                }
+
+                // At exactly 32 KiB the current position shares the same ring
+                // slot with the candidate, so its previous pointer was just
+                // overwritten. The candidate itself is valid, but the chain
+                // must stop here.
+                if (distance == DeflateWindowSize)
+                    break;
+
+                int next = previous[candidate & DeflateWindowMask];
+                if (next >= candidate)
+                    break;
+
+                candidate = next;
+            }
+
+            return new DeflateMatch(bestLength, bestDistance);
+        }
+
+        static void InsertDeflatePosition(
+            byte[] data,
+            int position,
+            int[] heads,
+            int[] previous)
+        {
+            if (position > data.Length - DeflateMinMatch)
+                return;
+
+            int hash = ComputeDeflateHash(data, position);
+            previous[position & DeflateWindowMask] = heads[hash];
+            heads[hash] = position;
+        }
+
+        static int ComputeDeflateHash(byte[] data, int position)
+        {
+            uint value =
+                ((uint)data[position] << 16) |
+                ((uint)data[position + 1] << 8) |
+                data[position + 2];
+
+            value ^= value >> 9;
+            value *= 0x1E35A7BDu;
+            return (int)((value >> 16) & (uint)DeflateHashMask);
+        }
+
+        static void WriteLengthDistance(
+            BitWriter writer,
+            int length,
+            int distance)
+        {
+            int lengthIndex = FindDeflateRange(
+                length,
+                LengthBase,
+                LengthExtraBits);
+
+            WriteFixedSymbol(
+                writer,
+                FixedLiteralLengthCodes,
+                257 + lengthIndex);
+
+            int lengthExtraBits = LengthExtraBits[lengthIndex];
+            if (lengthExtraBits != 0)
+            {
+                writer.WriteBits(
+                    length - LengthBase[lengthIndex],
+                    lengthExtraBits);
+            }
+
+            int distanceIndex = FindDeflateRange(
+                distance,
+                DistanceBase,
+                DistanceExtraBits);
+
+            WriteFixedSymbol(
+                writer,
+                FixedDistanceCodes,
+                distanceIndex);
+
+            int distanceExtraBits = DistanceExtraBits[distanceIndex];
+            if (distanceExtraBits != 0)
+            {
+                writer.WriteBits(
+                    distance - DistanceBase[distanceIndex],
+                    distanceExtraBits);
+            }
+        }
+
+        static int FindDeflateRange(
+            int value,
+            int[] bases,
+            int[] extraBits)
+        {
+            for (int i = 0; i < bases.Length; i++)
+            {
+                int maximum = bases[i];
+                int bits = extraBits[i];
+
+                if (bits != 0)
+                    maximum += (1 << bits) - 1;
+
+                if (value >= bases[i] && value <= maximum)
+                    return i;
+            }
+
+            throw new InvalidDataException(
+                "Value is outside the DEFLATE coding range: " + value);
+        }
+
+        static void WriteFixedSymbol(
+            BitWriter writer,
+            HuffmanCode[] codes,
+            int symbol)
+        {
+            if (symbol < 0 || symbol >= codes.Length)
+                throw new InvalidDataException("Invalid DEFLATE symbol: " + symbol);
+
+            HuffmanCode code = codes[symbol];
+            if (code.BitCount == 0)
+                throw new InvalidDataException("Missing DEFLATE Huffman code.");
+
+            writer.WriteBits((int)code.Bits, code.BitCount);
+        }
+
+        static HuffmanCode[] CreateFixedLiteralLengthCodes()
+        {
+            int[] lengths = new int[288];
+
+            for (int i = 0; i <= 143; i++) lengths[i] = 8;
+            for (int i = 144; i <= 255; i++) lengths[i] = 9;
+            for (int i = 256; i <= 279; i++) lengths[i] = 7;
+            for (int i = 280; i <= 287; i++) lengths[i] = 8;
+
+            return CreateCanonicalCodes(lengths);
+        }
+
+        static HuffmanCode[] CreateFixedDistanceCodes()
+        {
+            int[] lengths = new int[32];
+            for (int i = 0; i < lengths.Length; i++)
+                lengths[i] = 5;
+
+            return CreateCanonicalCodes(lengths);
+        }
+
+        static HuffmanCode[] CreateCanonicalCodes(int[] bitCounts)
+        {
+            int maximumBitCount = 0;
+            for (int i = 0; i < bitCounts.Length; i++)
+                maximumBitCount = Math.Max(maximumBitCount, bitCounts[i]);
+
+            int[] counts = new int[maximumBitCount + 1];
+            for (int i = 0; i < bitCounts.Length; i++)
+            {
+                if (bitCounts[i] > 0)
+                    counts[bitCounts[i]]++;
+            }
+
+            uint[] nextCodes = new uint[maximumBitCount + 1];
+            uint code = 0;
+
+            for (int bits = 1; bits <= maximumBitCount; bits++)
+            {
+                code = (code + (uint)counts[bits - 1]) << 1;
+                nextCodes[bits] = code;
+            }
+
+            var result = new HuffmanCode[bitCounts.Length];
+            for (int symbol = 0; symbol < bitCounts.Length; symbol++)
+            {
+                int bitCount = bitCounts[symbol];
+                if (bitCount == 0)
+                    continue;
+
+                uint canonical = nextCodes[bitCount]++;
+                result[symbol] = new HuffmanCode(
+                    ReverseBits(canonical, bitCount),
+                    (byte)bitCount);
+            }
+
+            return result;
+        }
+
+        static uint ReverseBits(uint value, int bitCount)
+        {
+            uint result = 0;
+
+            for (int i = 0; i < bitCount; i++)
+            {
+                result = (result << 1) | (value & 1u);
+                value >>= 1;
+            }
+
+            return result;
+        }
+
+        static void FillWithMinusOne(int[] values)
+        {
+            for (int i = 0; i < values.Length; i++)
+                values[i] = -1;
         }
 
         /// <summary>
@@ -649,6 +977,87 @@ namespace Adk.Compression.Zip
                    ((uint)data[offset + 1] << 16) |
                    ((uint)data[offset + 2] << 8) |
                    data[offset + 3];
+        }
+
+        struct HuffmanCode
+        {
+            public readonly uint Bits;
+            public readonly byte BitCount;
+
+            public HuffmanCode(uint bits, byte bitCount)
+            {
+                Bits = bits;
+                BitCount = bitCount;
+            }
+        }
+
+        struct DeflateMatch
+        {
+            public readonly int Length;
+            public readonly int Distance;
+
+            public DeflateMatch(int length, int distance)
+            {
+                Length = length;
+                Distance = distance;
+            }
+        }
+
+        sealed class BitWriter
+        {
+            byte[] _buffer;
+            int _count;
+            uint _bits;
+            int _bitCount;
+
+            public BitWriter(int initialCapacity)
+            {
+                _buffer = new byte[Math.Max(16, initialCapacity)];
+            }
+
+            public void WriteBits(int value, int count)
+            {
+                if (count < 0 || count > 24)
+                    throw new InvalidDataException("Invalid DEFLATE bit count.");
+
+                uint mask = count == 0 ? 0u : (1u << count) - 1u;
+                _bits |= ((uint)value & mask) << _bitCount;
+                _bitCount += count;
+
+                while (_bitCount >= 8)
+                {
+                    WriteByte((byte)_bits);
+                    _bits >>= 8;
+                    _bitCount -= 8;
+                }
+            }
+
+            public byte[] ToArray()
+            {
+                if (_bitCount != 0)
+                {
+                    WriteByte((byte)_bits);
+                    _bits = 0;
+                    _bitCount = 0;
+                }
+
+                byte[] result = new byte[_count];
+                Buffer.BlockCopy(_buffer, 0, result, 0, _count);
+                return result;
+            }
+
+            void WriteByte(byte value)
+            {
+                if (_count == _buffer.Length)
+                {
+                    int newLength = checked(_buffer.Length * 2);
+                    byte[] replacement = new byte[newLength];
+                    Buffer.BlockCopy(_buffer, 0, replacement, 0, _count);
+                    _buffer = replacement;
+                }
+
+                _buffer[_count++] = value;
+            }
         }
 
         sealed class BitReader : IHuffmanBitReader

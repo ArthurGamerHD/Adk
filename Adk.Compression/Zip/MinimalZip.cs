@@ -15,16 +15,25 @@ namespace Adk.Compression.Zip
         private const uint END_SIGNATURE = 0x06054B50;
 
         private const ushort STORED_METHOD = 0;
+        private const ushort DEFLATE_METHOD = 8;
         private const ushort UTF8_FLAG = 0x0800;
         private const ushort DESCRIPTOR_FLAG = 0x0008;
 
         private static readonly Encoding Utf8 =
             new UTF8Encoding(false, true);
 
+        public enum CompressionMode
+        {
+            Stored,
+            Deflate,
+            Auto
+        }
+
         public sealed class Entry
         {
             public string Name { get; }
             public byte[] Data { get; }
+            public CompressionMode Compression { get; }
             public DateTime CreationTime
             {
                 get { return DecodeDosDateTime(DosDate, DosTime); }
@@ -34,16 +43,40 @@ namespace Adk.Compression.Zip
             internal ushort DosDate { get; }
 
             public Entry(string name, byte[] data)
-                : this(name, data, DateTime.UtcNow)
+                : this(name, data, DateTime.UtcNow, CompressionMode.Stored)
+            {
+            }
+
+            public Entry(string name, byte[] data, CompressionMode compression)
+                : this(name, data, DateTime.UtcNow, compression)
             {
             }
 
             public Entry(string name, byte[] data, DateTime creationTime)
-                : this(name, data, EncodeDosTime(creationTime), EncodeDosDate(creationTime))
+                : this(name, data, creationTime, CompressionMode.Stored)
             {
             }
 
-            internal Entry(string name, byte[] data, ushort dosTime, ushort dosDate)
+            public Entry(
+                string name,
+                byte[] data,
+                DateTime creationTime,
+                CompressionMode compression)
+                : this(
+                    name,
+                    data,
+                    EncodeDosTime(creationTime),
+                    EncodeDosDate(creationTime),
+                    compression)
+            {
+            }
+
+            internal Entry(
+                string name,
+                byte[] data,
+                ushort dosTime,
+                ushort dosDate,
+                CompressionMode compression)
             {
                 Name = name;
 
@@ -55,6 +88,7 @@ namespace Adk.Compression.Zip
                 if (Data == null)
                     throw new ArgumentNullException(nameof(data));
 
+                Compression = compression;
                 DosTime = dosTime;
                 DosDate = dosDate;
             }
@@ -64,10 +98,13 @@ namespace Adk.Compression.Zip
         {
             public string Name = "";
             public byte[] NameBytes = Array.Empty<byte>();
+            public byte[] CompressedData;
             public uint Crc;
-            public uint Size;
+            public uint CompressedSize;
+            public uint UncompressedSize;
             public uint LocalOffset;
             public ushort Flags;
+            public ushort Method;
             public ushort DosTime;
             public ushort DosDate;
         }
@@ -128,22 +165,15 @@ namespace Adk.Compression.Zip
                     archiveSize,
                     "Archive exceeds the non-ZIP64 size limit.");
 
-                uint size = (uint)sourceEntry.Data.Length;
-                uint crc = CalculateCrc32(sourceEntry.Data);
+                DirectoryEntry entry = PrepareDirectoryEntry(
+                    sourceEntry,
+                    sourceEntry.Name,
+                    nameBytes,
+                    localOffset);
 
-                directory.Add(new DirectoryEntry
-                {
-                    Name = sourceEntry.Name,
-                    NameBytes = nameBytes,
-                    Crc = crc,
-                    Size = size,
-                    LocalOffset = localOffset,
-                    Flags = UTF8_FLAG,
-                    DosTime = sourceEntry.DosTime,
-                    DosDate = sourceEntry.DosDate
-                });
-
-                archiveSize = checked(archiveSize + 30L + nameBytes.Length + sourceEntry.Data.Length);
+                directory.Add(entry);
+                archiveSize = checked(
+                    archiveSize + 30L + nameBytes.Length + entry.CompressedSize);
             }
 
             long centralStart = archiveSize;
@@ -169,25 +199,24 @@ namespace Adk.Compression.Zip
             byte[] output = new byte[(int)archiveSize];
             int offset = 0;
 
-            for (int i = 0; i < source.Count; i++)
+            for (int i = 0; i < directory.Count; i++)
             {
-                Entry sourceEntry = source[i];
                 DirectoryEntry entry = directory[i];
 
                 WriteUInt32LittleEndian(output, ref offset, LOCAL_SIGNATURE);
                 WriteUInt16LittleEndian(output, ref offset, 20); // Version needed: 2.0
-                WriteUInt16LittleEndian(output, ref offset, UTF8_FLAG);
-                WriteUInt16LittleEndian(output, ref offset, STORED_METHOD);
+                WriteUInt16LittleEndian(output, ref offset, entry.Flags);
+                WriteUInt16LittleEndian(output, ref offset, entry.Method);
                 WriteUInt16LittleEndian(output, ref offset, entry.DosTime);
                 WriteUInt16LittleEndian(output, ref offset, entry.DosDate);
                 WriteUInt32LittleEndian(output, ref offset, entry.Crc);
-                WriteUInt32LittleEndian(output, ref offset, entry.Size);
-                WriteUInt32LittleEndian(output, ref offset, entry.Size);
+                WriteUInt32LittleEndian(output, ref offset, entry.CompressedSize);
+                WriteUInt32LittleEndian(output, ref offset, entry.UncompressedSize);
                 WriteUInt16LittleEndian(output, ref offset, entry.NameBytes.Length);
                 WriteUInt16LittleEndian(output, ref offset, 0); // Extra-field length
 
                 CopyBytes(entry.NameBytes, output, ref offset);
-                CopyBytes(sourceEntry.Data, output, ref offset);
+                CopyBytes(entry.CompressedData, output, ref offset);
             }
 
             for (int i = 0; i < directory.Count; i++)
@@ -198,12 +227,12 @@ namespace Adk.Compression.Zip
                 WriteUInt16LittleEndian(output, ref offset, 20); // Made by: MS-DOS, 2.0
                 WriteUInt16LittleEndian(output, ref offset, 20); // Version needed: 2.0
                 WriteUInt16LittleEndian(output, ref offset, entry.Flags);
-                WriteUInt16LittleEndian(output, ref offset, STORED_METHOD);
+                WriteUInt16LittleEndian(output, ref offset, entry.Method);
                 WriteUInt16LittleEndian(output, ref offset, entry.DosTime);
                 WriteUInt16LittleEndian(output, ref offset, entry.DosDate);
                 WriteUInt32LittleEndian(output, ref offset, entry.Crc);
-                WriteUInt32LittleEndian(output, ref offset, entry.Size);
-                WriteUInt32LittleEndian(output, ref offset, entry.Size);
+                WriteUInt32LittleEndian(output, ref offset, entry.CompressedSize);
+                WriteUInt32LittleEndian(output, ref offset, entry.UncompressedSize);
                 WriteUInt16LittleEndian(output, ref offset, entry.NameBytes.Length);
                 WriteUInt16LittleEndian(output, ref offset, 0); // Extra-field length
                 WriteUInt16LittleEndian(output, ref offset, 0); // File-comment length
@@ -300,7 +329,7 @@ namespace Adk.Compression.Zip
                     "Output must be an empty stream positioned at zero.",
                     nameof(output));
 
-            var source = new List<Entry>(entries);
+            var source = NormalizeEntries(entries);
 
             if (source.Count > ushort.MaxValue)
                 throw new NotSupportedException("ZIP64 is required.");
@@ -312,8 +341,7 @@ namespace Adk.Compression.Zip
             {
                 foreach (Entry sourceEntry in source)
                 {
-                    string name = NormalizeName(sourceEntry.Name);
-                    byte[] nameBytes = Utf8.GetBytes(name);
+                    byte[] nameBytes = Utf8.GetBytes(sourceEntry.Name);
 
                     if (nameBytes.Length > ushort.MaxValue)
                         throw new NotSupportedException("Entry name is too long.");
@@ -322,38 +350,30 @@ namespace Adk.Compression.Zip
                         output.Position,
                         "Archive exceeds the non-ZIP64 size limit.");
 
-                    uint size = checked((uint)sourceEntry.Data.Length);
-                    uint crc = CalculateCrc32(sourceEntry.Data);
-                    ushort dosTime = sourceEntry.DosTime;
-                    ushort dosDate = sourceEntry.DosDate;
+                    DirectoryEntry entry = PrepareDirectoryEntry(
+                        sourceEntry,
+                        sourceEntry.Name,
+                        nameBytes,
+                        localOffset);
 
                     // Local file header.
                     writer.Write(LOCAL_SIGNATURE);
                     writer.Write((ushort)20); // Version needed: 2.0
-                    writer.Write(UTF8_FLAG);
-                    writer.Write(STORED_METHOD);
-                    writer.Write(dosTime);
-                    writer.Write(dosDate);
-                    writer.Write(crc);
-                    writer.Write(size); // Compressed size
-                    writer.Write(size); // Uncompressed size
-                    writer.Write((ushort)nameBytes.Length);
+                    writer.Write(entry.Flags);
+                    writer.Write(entry.Method);
+                    writer.Write(entry.DosTime);
+                    writer.Write(entry.DosDate);
+                    writer.Write(entry.Crc);
+                    writer.Write(entry.CompressedSize);
+                    writer.Write(entry.UncompressedSize);
+                    writer.Write((ushort)entry.NameBytes.Length);
                     writer.Write((ushort)0); // Extra-field length
 
-                    writer.Write(nameBytes);
-                    writer.Write(sourceEntry.Data);
+                    writer.Write(entry.NameBytes);
+                    writer.Write(entry.CompressedData);
 
-                    directory.Add(new DirectoryEntry
-                    {
-                        Name = name,
-                        NameBytes = nameBytes,
-                        Crc = crc,
-                        Size = size,
-                        LocalOffset = localOffset,
-                        Flags = UTF8_FLAG,
-                        DosTime = dosTime,
-                        DosDate = dosDate
-                    });
+                    entry.CompressedData = null;
+                    directory.Add(entry);
                 }
 
                 long centralStart = output.Position;
@@ -369,12 +389,12 @@ namespace Adk.Compression.Zip
                     writer.Write((ushort)20); // Made by: MS-DOS, 2.0
                     writer.Write((ushort)20); // Version needed: 2.0
                     writer.Write(entry.Flags);
-                    writer.Write(STORED_METHOD);
+                    writer.Write(entry.Method);
                     writer.Write(entry.DosTime);
                     writer.Write(entry.DosDate);
                     writer.Write(entry.Crc);
-                    writer.Write(entry.Size);
-                    writer.Write(entry.Size);
+                    writer.Write(entry.CompressedSize);
+                    writer.Write(entry.UncompressedSize);
                     writer.Write((ushort)entry.NameBytes.Length);
                     writer.Write((ushort)0); // Extra-field length
                     writer.Write((ushort)0); // File-comment length
@@ -497,15 +517,19 @@ namespace Adk.Compression.Zip
                         "Only UTF-8 entry names are supported.");
 
                     Require(
-                        method == STORED_METHOD,
-                        "Only stored entries are supported.");
+                        method == STORED_METHOD || method == DEFLATE_METHOD,
+                        "Only stored and DEFLATE entries are supported.");
 
-                    Require(
-                        compressedSize == uncompressedSize,
-                        "Stored entry has inconsistent sizes.");
+                    if (method == STORED_METHOD)
+                    {
+                        Require(
+                            compressedSize == uncompressedSize,
+                            "Stored entry has inconsistent sizes.");
+                    }
 
                     Require(
                         compressedSize != uint.MaxValue &&
+                        uncompressedSize != uint.MaxValue &&
                         localOffset != uint.MaxValue,
                         "ZIP64 is not supported.");
 
@@ -519,9 +543,11 @@ namespace Adk.Compression.Zip
                         Name = name,
                         NameBytes = nameBytes,
                         Crc = crc,
-                        Size = compressedSize,
+                        CompressedSize = compressedSize,
+                        UncompressedSize = uncompressedSize,
                         LocalOffset = localOffset,
                         Flags = flags,
+                        Method = method,
                         DosTime = dosTime,
                         DosDate = dosDate
                     });
@@ -565,8 +591,8 @@ namespace Adk.Compression.Zip
                         "Encrypted entries are not supported.");
 
                     Require(
-                        localMethod == STORED_METHOD,
-                        "Unsupported local compression method.");
+                        localMethod == entry.Method,
+                        "Local and central compression methods differ.");
 
                     byte[] localName =
                         ReadExactly(input, localNameLength);
@@ -582,19 +608,39 @@ namespace Adk.Compression.Zip
                     {
                         Require(
                             localCrc == entry.Crc &&
-                            localCompressedSize == entry.Size &&
-                            localUncompressedSize == entry.Size,
+                            localCompressedSize == entry.CompressedSize &&
+                            localUncompressedSize == entry.UncompressedSize,
                             "Local and central metadata differ.");
                     }
 
-                    if (entry.Size > int.MaxValue)
+                    if (entry.CompressedSize > int.MaxValue ||
+                        entry.UncompressedSize > int.MaxValue)
                     {
                         throw new NotSupportedException(
                             "This byte[] API does not support entries over 2 GiB.");
                     }
 
-                    byte[] data =
-                        ReadExactly(input, checked((int)entry.Size));
+                    byte[] compressedData = ReadExactly(
+                        input,
+                        checked((int)entry.CompressedSize));
+
+                    byte[] data;
+                    CompressionMode compression;
+
+                    if (entry.Method == STORED_METHOD)
+                    {
+                        data = compressedData;
+                        compression = CompressionMode.Stored;
+                    }
+                    else
+                    {
+                        data = Zlib.InflateRawDeflate(
+                            compressedData,
+                            0,
+                            compressedData.Length,
+                            checked((int)entry.UncompressedSize));
+                        compression = CompressionMode.Deflate;
+                    }
 
                     Require(
                         CalculateCrc32(data) == entry.Crc,
@@ -604,7 +650,8 @@ namespace Adk.Compression.Zip
                         entry.Name,
                         data,
                         entry.DosTime,
-                        entry.DosDate));
+                        entry.DosDate,
+                        compression));
                 }
 
                 return result;
@@ -707,15 +754,19 @@ namespace Adk.Compression.Zip
                         "Only UTF-8 entry names are supported.");
 
                     Require(
-                        method == STORED_METHOD,
-                        "Only stored entries are supported.");
+                        method == STORED_METHOD || method == DEFLATE_METHOD,
+                        "Only stored and DEFLATE entries are supported.");
 
-                    Require(
-                        compressedSize == uncompressedSize,
-                        "Stored entry has inconsistent sizes.");
+                    if (method == STORED_METHOD)
+                    {
+                        Require(
+                            compressedSize == uncompressedSize,
+                            "Stored entry has inconsistent sizes.");
+                    }
 
                     Require(
                         compressedSize != uint.MaxValue &&
+                        uncompressedSize != uint.MaxValue &&
                         localOffset != uint.MaxValue,
                         "ZIP64 is not supported.");
 
@@ -844,6 +895,61 @@ namespace Adk.Compression.Zip
             return (uint)value;
         }
 
+        private static DirectoryEntry PrepareDirectoryEntry(
+            Entry sourceEntry,
+            string name,
+            byte[] nameBytes,
+            uint localOffset)
+        {
+            byte[] compressedData;
+            ushort method;
+
+            switch (sourceEntry.Compression)
+            {
+                case CompressionMode.Stored:
+                    compressedData = sourceEntry.Data;
+                    method = STORED_METHOD;
+                    break;
+
+                case CompressionMode.Deflate:
+                    compressedData = Zlib.DeflateRaw(sourceEntry.Data);
+                    method = DEFLATE_METHOD;
+                    break;
+
+                case CompressionMode.Auto:
+                    byte[] deflated = Zlib.DeflateRaw(sourceEntry.Data);
+                    if (deflated.Length < sourceEntry.Data.Length)
+                    {
+                        compressedData = deflated;
+                        method = DEFLATE_METHOD;
+                    }
+                    else
+                    {
+                        compressedData = sourceEntry.Data;
+                        method = STORED_METHOD;
+                    }
+                    break;
+
+                default:
+                    throw new InvalidOperationException("Unsupported ZIP compression mode.");
+            }
+
+            return new DirectoryEntry
+            {
+                Name = name,
+                NameBytes = nameBytes,
+                CompressedData = compressedData,
+                Crc = CalculateCrc32(sourceEntry.Data),
+                CompressedSize = checked((uint)compressedData.Length),
+                UncompressedSize = checked((uint)sourceEntry.Data.Length),
+                LocalOffset = localOffset,
+                Flags = UTF8_FLAG,
+                Method = method,
+                DosTime = sourceEntry.DosTime,
+                DosDate = sourceEntry.DosDate
+            };
+        }
+
         private static uint CalculateCrc32(byte[] data)
         {
             return Crc32.Compute(data);
@@ -895,12 +1001,27 @@ namespace Adk.Compression.Zip
             byte[] data,
             bool replaceExisting = false)
         {
+            AddEntry(
+                archive,
+                name,
+                data,
+                CompressionMode.Stored,
+                replaceExisting);
+        }
+
+        public static void AddEntry(
+            BinaryWriter archive,
+            string name,
+            byte[] data,
+            CompressionMode compression,
+            bool replaceExisting = false)
+        {
             if (data == null)
                 throw new ArgumentNullException(nameof(data));
 
             AddEntries(
                 archive,
-                new[] { new Entry(name, data) },
+                new[] { new Entry(name, data, compression) },
                 replaceExisting);
         }
 
@@ -1029,7 +1150,8 @@ namespace Adk.Compression.Zip
                     NormalizeName(entry.Name),
                     entry.Data,
                     entry.DosTime,
-                    entry.DosDate));
+                    entry.DosDate,
+                    entry.Compression));
             }
 
             return result;
