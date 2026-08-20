@@ -15,3 +15,9 @@ ADKAPI006 | AdkApiProviderGenerator | Error | API managers must support generate
 ADKAPI007 | AdkApiProviderGenerator | Error | API managers require a compatible root GetApi provider
 ADKAPI008 | AdkApiProviderGenerator | Error | API manager ports must be unique
 ADKAPI009 | AdkApiProviderGenerator | Error | Generated API client mirror names must be valid and unique
+ADKNET001 | AdkAnalyzer | Error | Network payload targets must be top-level, non-static partial classes
+ADKNET002 | AdkAnalyzer | Error | Network payload IDs must be valid
+ADKNET003 | AdkAnalyzer | Error | Network payload IDs must be unique
+ADKNET004 | AdkAnalyzer | Error | Network callbacks must have a supported event-args or payload signature
+ADKNET005 | AdkAnalyzer | Error | Network callback IDs must be valid
+ADKNET006 | AdkAnalyzer | Error | Network callbacks must reference a generated payload type
