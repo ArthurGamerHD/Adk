@@ -565,6 +565,29 @@ public sealed class ApiProviderGenerator : IIncrementalGenerator
     }
 
 
+    static bool IsEnumType(
+        ITypeSymbol type)
+    {
+        var namedType =
+            type as INamedTypeSymbol;
+
+        return namedType?.TypeKind == TypeKind.Enum &&
+               namedType.EnumUnderlyingType != null;
+    }
+
+
+    static ITypeSymbol ApiWireType(
+        ITypeSymbol type)
+    {
+        var namedType =
+            type as INamedTypeSymbol;
+
+        return namedType?.TypeKind == TypeKind.Enum
+            ? namedType.EnumUnderlyingType ?? type
+            : type;
+    }
+
+
     static bool IsApiDataType(
         ITypeSymbol type)
     {
@@ -1417,6 +1440,17 @@ public sealed class ApiProviderGenerator : IIncrementalGenerator
             return;
         }
 
+        if (IsEnumType(
+            type))
+        {
+            AddClientTypeNamespaces(
+                namespaces,
+                ApiWireType(
+                    type));
+
+            return;
+        }
+
         var arrayType =
             type as IArrayTypeSymbol;
 
@@ -1466,7 +1500,7 @@ public sealed class ApiProviderGenerator : IIncrementalGenerator
             return "ApiData";
         }
 
-        return type?.ToDisplayString(
+        return ApiWireType(type)?.ToDisplayString(
                    SymbolDisplayFormat.MinimallyQualifiedFormat)
                ?? string.Empty;
     }
@@ -1784,6 +1818,13 @@ public sealed class ApiProviderGenerator : IIncrementalGenerator
         bool returnsVoid =
             method.ReturnsVoid;
 
+        bool requiresEnumAdapter =
+            IsEnumType(
+                method.ReturnType) ||
+            method.Parameters.Any(parameter =>
+                IsEnumType(
+                    parameter.Type));
+
         builder.Append("new global::System.");
         builder.Append(
             returnsVoid
@@ -1807,7 +1848,8 @@ public sealed class ApiProviderGenerator : IIncrementalGenerator
 
                 builder.Append(
                     TypeDisplayName(
-                        method.Parameters[i].Type));
+                        ApiWireType(
+                            method.Parameters[i].Type)));
             }
 
             if (!returnsVoid)
@@ -1817,7 +1859,8 @@ public sealed class ApiProviderGenerator : IIncrementalGenerator
 
                 builder.Append(
                     TypeDisplayName(
-                        method.ReturnType));
+                        ApiWireType(
+                            method.ReturnType)));
             }
 
             builder.Append(">");
@@ -1825,12 +1868,78 @@ public sealed class ApiProviderGenerator : IIncrementalGenerator
 
         builder.Append("(");
 
-        if (!method.IsStatic)
-            builder.Append("this.");
+        if (!requiresEnumAdapter)
+        {
+            if (!method.IsStatic)
+                builder.Append("this.");
 
-        builder.Append(
-            EscapeIdentifier(
-                method.Name));
+            builder.Append(
+                EscapeIdentifier(
+                    method.Name));
+        }
+        else
+        {
+            builder.Append("(");
+
+            for (int i = 0;
+                i < method.Parameters.Length;
+                i++)
+            {
+                if (i > 0)
+                    builder.Append(", ");
+
+                builder.Append("__apiArg");
+                builder.Append(i);
+            }
+
+            builder.Append(") => ");
+
+            if (IsEnumType(
+                method.ReturnType))
+            {
+                builder.Append("(");
+                builder.Append(
+                    TypeDisplayName(
+                        ApiWireType(
+                            method.ReturnType)));
+                builder.Append(")");
+            }
+
+            if (!method.IsStatic)
+                builder.Append("this.");
+
+            builder.Append(
+                EscapeIdentifier(
+                    method.Name));
+            builder.Append("(");
+
+            for (int i = 0;
+                i < method.Parameters.Length;
+                i++)
+            {
+                if (i > 0)
+                    builder.Append(", ");
+
+                ITypeSymbol parameterType =
+                    method.Parameters[i].Type;
+
+                if (IsEnumType(
+                    parameterType))
+                {
+                    builder.Append("(");
+                    builder.Append(
+                        TypeDisplayName(
+                            parameterType));
+                    builder.Append(")");
+                }
+
+                builder.Append("__apiArg");
+                builder.Append(i);
+            }
+
+            builder.Append(")");
+        }
+
         builder.Append(")");
     }
 
