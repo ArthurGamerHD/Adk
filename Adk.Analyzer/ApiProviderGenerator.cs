@@ -787,6 +787,12 @@ public sealed class ApiProviderGenerator : IIncrementalGenerator
                     validProviders));
         }
 
+        GenerateClientEnums(
+            context,
+            providerMethods,
+            mirrors,
+            mirrorFileNames);
+
         var generatedBootstrappers =
             new HashSet<INamedTypeSymbol>(
                 SymbolEqualityComparer.Default);
@@ -836,6 +842,122 @@ public sealed class ApiProviderGenerator : IIncrementalGenerator
                     mirror,
                     bootstrapperFileName,
                     manager.Port));
+        }
+    }
+
+
+    static void GenerateClientEnums(
+        SourceProductionContext context,
+        Dictionary<INamedTypeSymbol, List<ApiMethodInput>> providerMethods,
+        Dictionary<INamedTypeSymbol, ClientMirrorInput> mirrors,
+        HashSet<string> generatedFileNames)
+    {
+        var generatedEnums =
+            new HashSet<string>(
+                StringComparer.Ordinal);
+
+        foreach (KeyValuePair<INamedTypeSymbol, ClientMirrorInput> pair in
+            mirrors.OrderBy(
+                value => value.Value.FullName,
+                StringComparer.Ordinal))
+        {
+            List<ApiMethodInput> methods;
+
+            if (!providerMethods.TryGetValue(
+                    pair.Key,
+                    out methods))
+            {
+                continue;
+            }
+
+            foreach (INamedTypeSymbol enumType in
+                GetApiEnumTypes(methods)
+                    .OrderBy(
+                        TypeDisplayName,
+                        StringComparer.Ordinal))
+            {
+                string fullName =
+                    pair.Value.Namespace +
+                    "." +
+                    enumType.Name;
+
+                if (!generatedEnums.Add(
+                        fullName))
+                {
+                    continue;
+                }
+
+                if (!generatedFileNames.Add(
+                        enumType.Name))
+                {
+                    context.ReportDiagnostic(
+                        Diagnostic.Create(
+                            InvalidClientMirror,
+                            SymbolLocation(
+                                enumType),
+                            TypeDisplayName(
+                                pair.Key),
+                            fullName));
+
+                    continue;
+                }
+
+                context.AddSource(
+                    enumType.Name,
+                    BuildClientEnumSource(
+                        enumType,
+                        pair.Value.Namespace));
+            }
+        }
+    }
+
+
+    static IReadOnlyList<INamedTypeSymbol> GetApiEnumTypes(
+        IReadOnlyList<ApiMethodInput> methods)
+    {
+        var result =
+            new List<INamedTypeSymbol>();
+
+        var seen =
+            new HashSet<INamedTypeSymbol>(
+                SymbolEqualityComparer.Default);
+
+        foreach (ApiMethodInput method in methods)
+        {
+            AddApiEnumType(
+                method.Method.ReturnType,
+                seen,
+                result);
+
+            foreach (IParameterSymbol parameter in
+                method.Method.Parameters)
+            {
+                AddApiEnumType(
+                    parameter.Type,
+                    seen,
+                    result);
+            }
+        }
+
+        return result;
+    }
+
+
+    static void AddApiEnumType(
+        ITypeSymbol type,
+        HashSet<INamedTypeSymbol> seen,
+        List<INamedTypeSymbol> result)
+    {
+        var enumType =
+            type as INamedTypeSymbol;
+
+        if (IsEnumType(
+                enumType) &&
+            seen.Add(
+                enumType))
+        {
+            result.Add(
+                enumType);
         }
     }
 
@@ -1334,6 +1456,17 @@ public sealed class ApiProviderGenerator : IIncrementalGenerator
             else
             {
                 builder.Append("            return ");
+
+                if (IsEnumType(
+                    method.Method.ReturnType))
+                {
+                    builder.Append("(");
+                    builder.Append(
+                        ClientPublicTypeDisplayName(
+                            method.Method.ReturnType));
+                    builder.Append(")");
+                }
+
                 AppendClientInvocation(
                     builder,
                     fieldNames[i],
@@ -1367,6 +1500,100 @@ public sealed class ApiProviderGenerator : IIncrementalGenerator
         builder.AppendLine();
         builder.AppendLine("            return result;");
         builder.AppendLine("        }");
+        builder.AppendLine("    }");
+        builder.AppendLine("}");
+
+        return builder.ToString();
+    }
+
+
+    static string BuildClientEnumSource(
+        INamedTypeSymbol enumType,
+        string clientNamespace)
+    {
+        var builder =
+            new StringBuilder();
+
+        bool hasFlags =
+            enumType.GetAttributes()
+                .Any(attribute =>
+                    attribute.AttributeClass?.ToDisplayString() ==
+                        "System.FlagsAttribute");
+
+        builder.AppendLine("// <auto-generated/>");
+
+        if (hasFlags)
+        {
+            builder.AppendLine("using System;");
+            builder.AppendLine();
+        }
+
+        builder.Append("namespace ");
+        builder.Append(
+            clientNamespace);
+        builder.AppendLine();
+        builder.AppendLine("{");
+
+        AppendDocumentation(
+            builder,
+            enumType,
+            "    ");
+
+        if (hasFlags)
+            builder.AppendLine("    [Flags]");
+
+        builder.Append("    public enum ");
+        builder.Append(
+            EscapeIdentifier(
+                enumType.Name));
+
+        if (enumType.EnumUnderlyingType?.SpecialType !=
+            SpecialType.System_Int32)
+        {
+            builder.Append(" : ");
+            builder.Append(
+                enumType.EnumUnderlyingType?.ToDisplayString(
+                    SymbolDisplayFormat.MinimallyQualifiedFormat));
+        }
+
+        builder.AppendLine();
+        builder.AppendLine("    {");
+
+        IFieldSymbol[] members =
+            enumType.GetMembers()
+                .OfType<IFieldSymbol>()
+                .Where(field =>
+                    field.HasConstantValue)
+                .ToArray();
+
+        for (int index = 0;
+            index < members.Length;
+            index++)
+        {
+            IFieldSymbol member =
+                members[index];
+
+            AppendDocumentation(
+                builder,
+                member,
+                "        ");
+
+            builder.Append("        ");
+            builder.Append(
+                EscapeIdentifier(
+                    member.Name));
+            builder.Append(" = ");
+            builder.Append(
+                Convert.ToString(
+                    member.ConstantValue,
+                    System.Globalization.CultureInfo.InvariantCulture));
+
+            if (index < members.Length - 1)
+                builder.Append(",");
+
+            builder.AppendLine();
+        }
+
         builder.AppendLine("    }");
         builder.AppendLine("}");
 
@@ -1491,7 +1718,7 @@ public sealed class ApiProviderGenerator : IIncrementalGenerator
     }
 
 
-    static string ClientTypeDisplayName(
+    static string ClientWireTypeDisplayName(
         ITypeSymbol type)
     {
         if (IsApiDataType(
@@ -1503,6 +1730,24 @@ public sealed class ApiProviderGenerator : IIncrementalGenerator
         return ApiWireType(type)?.ToDisplayString(
                    SymbolDisplayFormat.MinimallyQualifiedFormat)
                ?? string.Empty;
+    }
+
+
+    static string ClientPublicTypeDisplayName(
+        ITypeSymbol type)
+    {
+        var enumType =
+            type as INamedTypeSymbol;
+
+        if (IsEnumType(
+            enumType))
+        {
+            return EscapeIdentifier(
+                enumType.Name);
+        }
+
+        return ClientWireTypeDisplayName(
+            type);
     }
 
 
@@ -1580,7 +1825,7 @@ public sealed class ApiProviderGenerator : IIncrementalGenerator
                 builder.Append(", ");
 
             builder.Append(
-                ClientTypeDisplayName(
+                ClientWireTypeDisplayName(
                     method.Parameters[i].Type));
         }
 
@@ -1590,7 +1835,7 @@ public sealed class ApiProviderGenerator : IIncrementalGenerator
                 builder.Append(", ");
 
             builder.Append(
-                ClientTypeDisplayName(
+                ClientWireTypeDisplayName(
                     method.ReturnType));
         }
 
@@ -1619,7 +1864,7 @@ public sealed class ApiProviderGenerator : IIncrementalGenerator
         }
 
         builder.Append(
-            ClientTypeDisplayName(
+            ClientPublicTypeDisplayName(
                 method.Method.ReturnType));
     }
 
@@ -1642,7 +1887,7 @@ public sealed class ApiProviderGenerator : IIncrementalGenerator
 
             builder.Append("            ");
             builder.Append(
-                ClientTypeDisplayName(
+                ClientPublicTypeDisplayName(
                     parameter.Type));
             builder.Append(" ");
             builder.Append(
@@ -1677,9 +1922,22 @@ public sealed class ApiProviderGenerator : IIncrementalGenerator
             if (i > 0)
                 builder.Append(", ");
 
+            IParameterSymbol parameter =
+                method.Parameters[i];
+
+            if (IsEnumType(
+                parameter.Type))
+            {
+                builder.Append("(");
+                builder.Append(
+                    ClientWireTypeDisplayName(
+                        parameter.Type));
+                builder.Append(")");
+            }
+
             builder.Append(
                 EscapeIdentifier(
-                    method.Parameters[i].Name));
+                    parameter.Name));
         }
 
         builder.Append(")");
