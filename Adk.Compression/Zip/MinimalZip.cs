@@ -142,8 +142,21 @@ namespace Adk.Compression.Zip
 
         public static byte[] WriteBytes(IEnumerable<Entry> entries)
         {
+            return WriteBytes(
+                entries,
+                null);
+        }
+
+        public static byte[] WriteBytes(
+            IEnumerable<Entry> entries,
+            string comment)
+        {
             if (entries == null)
                 throw new ArgumentNullException(nameof(entries));
+
+            byte[] commentBytes =
+                EncodeComment(
+                    comment);
 
             var source = NormalizeEntries(entries);
 
@@ -188,7 +201,7 @@ namespace Adk.Compression.Zip
                 archiveSize - centralStart,
                 "Central directory exceeds the non-ZIP64 size limit.");
 
-            archiveSize = checked(archiveSize + 22L);
+            archiveSize = checked(archiveSize + 22L + commentBytes.Length);
 
             if (archiveSize > int.MaxValue)
             {
@@ -250,7 +263,8 @@ namespace Adk.Compression.Zip
             WriteUInt16LittleEndian(output, ref offset, directory.Count);
             WriteUInt32LittleEndian(output, ref offset, centralSize);
             WriteUInt32LittleEndian(output, ref offset, centralOffset);
-            WriteUInt16LittleEndian(output, ref offset, 0); // ZIP-comment length
+            WriteUInt16LittleEndian(output, ref offset, commentBytes.Length);
+            CopyBytes(commentBytes, output, ref offset);
 
             return output;
         }
@@ -313,6 +327,17 @@ namespace Adk.Compression.Zip
     
         public static void Write(Stream output, IEnumerable<Entry> entries)
         {
+            Write(
+                output,
+                entries,
+                null);
+        }
+
+        public static void Write(
+            Stream output,
+            IEnumerable<Entry> entries,
+            string comment)
+        {
             if (output == null)
                 throw new ArgumentNullException(nameof(output));
 
@@ -328,6 +353,10 @@ namespace Adk.Compression.Zip
                 throw new ArgumentException(
                     "Output must be an empty stream positioned at zero.",
                     nameof(output));
+
+            byte[] commentBytes =
+                EncodeComment(
+                    comment);
 
             var source = NormalizeEntries(entries);
 
@@ -417,7 +446,8 @@ namespace Adk.Compression.Zip
                 writer.Write((ushort)directory.Count);
                 writer.Write(centralSize);
                 writer.Write(centralOffset);
-                writer.Write((ushort)0); // ZIP-comment length
+                writer.Write((ushort)commentBytes.Length);
+                writer.Write(commentBytes);
             }
         }
 
@@ -658,6 +688,319 @@ namespace Adk.Compression.Zip
             }
         }
 
+        public static bool TryReadComment(
+            Stream input,
+            out string comment)
+        {
+            if (input == null)
+                throw new ArgumentNullException(nameof(input));
+
+            if (!input.CanRead || !input.CanSeek)
+                throw new ArgumentException(
+                    "Input must be readable and seekable.", nameof(input));
+
+            long endOffset =
+                FindEndRecord(
+                    input);
+
+            using (var reader =
+                   new BinaryReader(input, Encoding.UTF8, leaveOpen: true))
+            {
+                input.Position =
+                    endOffset;
+
+                Require(
+                    reader.ReadUInt32() == END_SIGNATURE,
+                    "Invalid end-of-central-directory signature.");
+
+                reader.ReadUInt16(); // This disk
+                reader.ReadUInt16(); // Central-directory disk
+                reader.ReadUInt16(); // Entries on disk
+                reader.ReadUInt16(); // Entry count
+                reader.ReadUInt32(); // Central-directory size
+                reader.ReadUInt32(); // Central-directory offset
+
+                ushort commentLength =
+                    reader.ReadUInt16();
+
+                Require(
+                    endOffset + 22L + commentLength == input.Length,
+                    "Invalid ZIP comment length.");
+
+                comment =
+                    Utf8.GetString(
+                        ReadExactly(
+                            input,
+                            commentLength));
+
+                return true;
+            }
+        }
+
+
+        public static bool TryReadEntry(
+            Stream input,
+            string name,
+            out byte[] data,
+            bool ignoreCase = false)
+        {
+            if (input == null)
+                throw new ArgumentNullException(nameof(input));
+
+            if (!input.CanRead || !input.CanSeek)
+                throw new ArgumentException(
+                    "Input must be readable and seekable.", nameof(input));
+
+            string normalizedName =
+                NormalizeName(
+                    name);
+
+            long endOffset =
+                FindEndRecord(
+                    input);
+
+            DirectoryEntry matched =
+                null;
+
+            using (var reader =
+                   new BinaryReader(input, Encoding.UTF8, leaveOpen: true))
+            {
+                input.Position =
+                    endOffset;
+
+                Require(
+                    reader.ReadUInt32() == END_SIGNATURE,
+                    "Invalid end-of-central-directory signature.");
+
+                ushort disk = reader.ReadUInt16();
+                ushort centralDisk = reader.ReadUInt16();
+                ushort entriesOnDisk = reader.ReadUInt16();
+                ushort entryCount = reader.ReadUInt16();
+                uint centralSize = reader.ReadUInt32();
+                uint centralOffset = reader.ReadUInt32();
+                ushort commentLength = reader.ReadUInt16();
+
+                Require(
+                    disk == 0 &&
+                    centralDisk == 0 &&
+                    entriesOnDisk == entryCount,
+                    "Multi-disk ZIP files are not supported.");
+
+                Require(
+                    centralSize != uint.MaxValue &&
+                    centralOffset != uint.MaxValue,
+                    "ZIP64 is not supported.");
+
+                Require(
+                    (ulong)centralOffset + centralSize <= (ulong)endOffset,
+                    "Invalid central-directory bounds.");
+
+                Require(
+                    endOffset + 22L + commentLength == input.Length,
+                    "Invalid ZIP comment length.");
+
+                input.Position =
+                    centralOffset;
+
+                for (int i = 0;
+                    i < entryCount;
+                    i++)
+                {
+                    Require(
+                        reader.ReadUInt32() == CENTRAL_SIGNATURE,
+                        "Invalid central-directory entry.");
+
+                    reader.ReadUInt16(); // Version made by
+                    reader.ReadUInt16(); // Version needed
+
+                    ushort flags = reader.ReadUInt16();
+                    ushort method = reader.ReadUInt16();
+
+                    ushort dosTime = reader.ReadUInt16();
+                    ushort dosDate = reader.ReadUInt16();
+
+                    uint crc = reader.ReadUInt32();
+                    uint compressedSize = reader.ReadUInt32();
+                    uint uncompressedSize = reader.ReadUInt32();
+
+                    ushort nameLength = reader.ReadUInt16();
+                    ushort extraLength = reader.ReadUInt16();
+                    ushort fileCommentLength = reader.ReadUInt16();
+                    ushort startDisk = reader.ReadUInt16();
+
+                    reader.ReadUInt16(); // Internal attributes
+                    reader.ReadUInt32(); // External attributes
+
+                    uint localOffset = reader.ReadUInt32();
+
+                    Require(
+                        startDisk == 0,
+                        "Multi-disk ZIP files are not supported.");
+
+                    Require(
+                        (flags & 0x0001) == 0,
+                        "Encrypted entries are not supported.");
+
+                    Require(
+                        (flags & ~(UTF8_FLAG | DESCRIPTOR_FLAG)) == 0,
+                        "Unsupported ZIP entry flags.");
+
+                    Require(
+                        (flags & UTF8_FLAG) != 0,
+                        "Only UTF-8 entry names are supported.");
+
+                    Require(
+                        method == STORED_METHOD || method == DEFLATE_METHOD,
+                        "Only stored and DEFLATE entries are supported.");
+
+                    if (method == STORED_METHOD)
+                    {
+                        Require(
+                            compressedSize == uncompressedSize,
+                            "Stored entry has inconsistent sizes.");
+                    }
+
+                    Require(
+                        compressedSize != uint.MaxValue &&
+                        uncompressedSize != uint.MaxValue &&
+                        localOffset != uint.MaxValue,
+                        "ZIP64 is not supported.");
+
+                    byte[] nameBytes =
+                        ReadExactly(
+                            input,
+                            nameLength);
+
+                    string entryName =
+                        Utf8.GetString(
+                            nameBytes);
+
+                    Skip(
+                        input,
+                        (long)extraLength + fileCommentLength);
+
+                    if (string.Equals(
+                        entryName,
+                        normalizedName,
+                        ignoreCase
+                            ? StringComparison.OrdinalIgnoreCase
+                            : StringComparison.Ordinal))
+                    {
+                        matched =
+                            new DirectoryEntry
+                            {
+                                Name = entryName,
+                                NameBytes = nameBytes,
+                                Crc = crc,
+                                CompressedSize = compressedSize,
+                                UncompressedSize = uncompressedSize,
+                                LocalOffset = localOffset,
+                                Flags = flags,
+                                Method = method,
+                                DosTime = dosTime,
+                                DosDate = dosDate
+                            };
+
+                        break;
+                    }
+                }
+
+                if (matched == null)
+                {
+                    data =
+                        null;
+
+                    return false;
+                }
+
+                input.Position =
+                    matched.LocalOffset;
+
+                Require(
+                    reader.ReadUInt32() == LOCAL_SIGNATURE,
+                    "Invalid local-file-header signature.");
+
+                reader.ReadUInt16(); // Version needed
+
+                ushort localFlags = reader.ReadUInt16();
+                ushort localMethod = reader.ReadUInt16();
+
+                reader.ReadUInt16(); // Time
+                reader.ReadUInt16(); // Date
+
+                uint localCrc = reader.ReadUInt32();
+                uint localCompressedSize = reader.ReadUInt32();
+                uint localUncompressedSize = reader.ReadUInt32();
+
+                ushort localNameLength = reader.ReadUInt16();
+                ushort localExtraLength = reader.ReadUInt16();
+
+                Require(
+                    localFlags == matched.Flags,
+                    "Local and central entry flags differ.");
+
+                Require(
+                    localMethod == matched.Method,
+                    "Local and central compression methods differ.");
+
+                byte[] localName =
+                    ReadExactly(
+                        input,
+                        localNameLength);
+
+                Require(
+                    BytesEqual(localName, matched.NameBytes),
+                    "Local and central entry names differ.");
+
+                Skip(
+                    input,
+                    localExtraLength);
+
+                if ((localFlags & DESCRIPTOR_FLAG) == 0)
+                {
+                    Require(
+                        localCrc == matched.Crc &&
+                        localCompressedSize == matched.CompressedSize &&
+                        localUncompressedSize == matched.UncompressedSize,
+                        "Local and central metadata differ.");
+                }
+
+                if (matched.CompressedSize > int.MaxValue ||
+                    matched.UncompressedSize > int.MaxValue)
+                {
+                    throw new NotSupportedException(
+                        "This byte[] API does not support entries over 2 GiB.");
+                }
+
+                byte[] compressedData =
+                    ReadExactly(
+                        input,
+                        checked((int)matched.CompressedSize));
+
+                if (matched.Method == STORED_METHOD)
+                {
+                    data =
+                        compressedData;
+                }
+                else
+                {
+                    data =
+                        Zlib.InflateRawDeflate(
+                            compressedData,
+                            0,
+                            compressedData.Length,
+                            checked((int)matched.UncompressedSize));
+                }
+
+                Require(
+                    CalculateCrc32(data) == matched.Crc,
+                    "CRC-32 validation failed for " + matched.Name);
+
+                return true;
+            }
+        }
+
+
         public static bool ContainsEntry(Stream input, string name, bool ignoreCase = false)
         {
             if (input == null)
@@ -825,6 +1168,26 @@ namespace Adk.Compression.Zip
 
             return name;
         }
+
+        private static byte[] EncodeComment(
+            string comment)
+        {
+            if (string.IsNullOrEmpty(comment))
+                return Array.Empty<byte>();
+
+            byte[] commentBytes =
+                Utf8.GetBytes(
+                    comment);
+
+            if (commentBytes.Length > ushort.MaxValue)
+            {
+                throw new NotSupportedException(
+                    "ZIP comment is too long.");
+            }
+
+            return commentBytes;
+        }
+
 
         private static long FindEndRecord(Stream input)
         {
