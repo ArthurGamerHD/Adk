@@ -1894,6 +1894,10 @@ public sealed class ApiProviderGenerator : IIncrementalGenerator
                 EscapeIdentifier(
                     parameter.Name));
 
+            AppendClientParameterDefault(
+                builder,
+                parameter);
+
             if (i < method.Parameters.Length - 1)
             {
                 builder.AppendLine(",");
@@ -1903,6 +1907,56 @@ public sealed class ApiProviderGenerator : IIncrementalGenerator
                 builder.AppendLine(")");
             }
         }
+    }
+
+
+    static void AppendClientParameterDefault(
+        StringBuilder builder,
+        IParameterSymbol parameter)
+    {
+        if (!parameter.HasExplicitDefaultValue)
+            return;
+
+        builder.Append(" = ");
+
+        object value =
+            parameter.ExplicitDefaultValue;
+
+        if (value == null)
+        {
+            if (parameter.Type.IsValueType &&
+                parameter.Type.OriginalDefinition.SpecialType !=
+                    SpecialType.System_Nullable_T)
+            {
+                builder.Append("default(");
+                builder.Append(
+                    ClientPublicTypeDisplayName(
+                        parameter.Type));
+                builder.Append(")");
+            }
+            else
+            {
+                builder.Append("null");
+            }
+
+            return;
+        }
+
+        if (IsEnumType(
+                parameter.Type))
+        {
+            builder.Append("(");
+            builder.Append(
+                ClientPublicTypeDisplayName(
+                    parameter.Type));
+            builder.Append(")");
+        }
+
+        builder.Append(
+            SymbolDisplay.FormatPrimitive(
+                value,
+                true,
+                false));
     }
 
 
