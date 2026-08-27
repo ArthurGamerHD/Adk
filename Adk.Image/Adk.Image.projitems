@@ -6,6 +6,9 @@
     <SharedGUID>87fdc905-a339-4758-885f-0b2b5199f7e7</SharedGUID>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="$(MSBuildThisFileDirectory)Dds\Bc7Encoder.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Dds\DdsEncoder.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Dds\SpaceEngineersTextureProfiles.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)Imaging\ContentTexturePath.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)Imaging\DdsAverageColor.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)Imaging\RawRgbaBitmap.cs" />

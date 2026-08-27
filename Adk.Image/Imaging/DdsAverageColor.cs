@@ -16,8 +16,9 @@ namespace Adk.Image
         const uint FOURCC_DX10 = 0x30315844u;
         const uint DXGI_FORMAT_BC1_UNORM = 71u;
         const uint DXGI_FORMAT_BC1_UNORM_SRGB = 72u;
-        const uint DXGI_FORMAT_BC7_UNORM = 98u;
-        const uint DXGI_FORMAT_BC7_UNORM_SRGB = 99u;
+        const uint DXGI_FORMAT_BC7_TYPELESS = 98u;
+        const uint DXGI_FORMAT_BC7_UNORM = 99u;
+        const uint DXGI_FORMAT_BC7_UNORM_SRGB = 100u;
         const int DDS_HEADER_BYTES = 128;
         const int DDS_DX10_HEADER_BYTES = 20;
 
@@ -398,7 +399,8 @@ namespace Adk.Image
                     return true;
                 }
 
-                if (dxgiFormat == DXGI_FORMAT_BC7_UNORM ||
+                if (dxgiFormat == DXGI_FORMAT_BC7_TYPELESS ||
+                    dxgiFormat == DXGI_FORMAT_BC7_UNORM ||
                     dxgiFormat == DXGI_FORMAT_BC7_UNORM_SRGB)
                 {
                     info.Encoding = DdsPixelEncoding.Bc7;
