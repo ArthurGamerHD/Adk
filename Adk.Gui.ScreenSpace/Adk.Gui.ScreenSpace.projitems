@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <MSBuildAllProjects Condition="'$(MSBuildVersion)' == '' Or '$(MSBuildVersion)' &lt; '16.0'">$(MSBuildAllProjects);$(MSBuildThisFileFullPath)</MSBuildAllProjects>
+    <HasSharedItems>true</HasSharedItems>
+    <SharedGUID>4a8f3d24-0d2c-4d1a-8d71-5fc6a0be03aa</SharedGUID>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="$(MSBuildThisFileDirectory)DynamicMapTexture.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)ScreenSpaceInputSource.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)ScreenSpaceRenderer.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)ScreenSpaceTextMetrics.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)ScreenSpaceTextureResolver.cs" />
+  </ItemGroup>
+</Project>

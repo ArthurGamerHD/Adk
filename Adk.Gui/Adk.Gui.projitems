@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <MSBuildAllProjects Condition="'$(MSBuildVersion)' == '' Or '$(MSBuildVersion)' &lt; '16.0'">$(MSBuildAllProjects);$(MSBuildThisFileFullPath)</MSBuildAllProjects>
+    <HasSharedItems>true</HasSharedItems>
+    <SharedGUID>5d175573-c301-4cb0-b4b1-88cbe2d6a81e</SharedGUID>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="$(MSBuildThisFileDirectory)Gui.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Controls\Border.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Controls\Button.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Controls\ComboBox.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Controls\KeySelector.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Controls\Label.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Controls\MessageBox.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Controls\Slider.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Controls\TextBlock.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Controls\TextBox.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Controls\TextPresenter.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Controls\ToggleSwitch.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Controls\TriangleIcon.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Controls\TextureIcon.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Core\Binding\Bindings.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Core\Control.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Core\TemplatedControl.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Core\FrameworkElement.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Core\IControlContainer.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Core\IInputSource.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Core\Invalidation\UiInvalidation.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Core\PropertySystem\PropertyStore.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Core\PropertySystem\StyledProperty.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Core\PropertySystem\StyledPropertyCatalog.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Core\Visual.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Core\VisualElement.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Core\VisualTree.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Layout\Decorator.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Layout\LayoutControls.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Layout\Panel.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Layout\ScrollViewer.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Markup\BindingExtension.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Markup\PropertyConverter.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Markup\TypeRegistry.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Markup\UiXmlLoader.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Rendering\BorderTextureCache.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Rendering\DrawCommand.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Rendering\IDynamicTexture.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Rendering\ITextMetrics.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Rendering\ITextureResolver.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Rendering\IUiRenderer.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Rendering\PixelCanvas.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Rendering\RenderContext.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Rendering\TextureSource.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Styling\ControlTemplate.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Styling\BackgroundBrush.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Styling\DataTemplate.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Styling\ResourceDictionary.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Styling\Style.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Styling\StylePropertyRegistry.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Styling\PseudoClasses.cs" />
+  </ItemGroup>
+</Project>

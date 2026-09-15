@@ -1,5 +1,9 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
+Project("{D954291E-2A0B-460D-934E-DC6B0785DB48}") = "Adk.Gui.ScreenSpace", "Adk.Gui.ScreenSpace\Adk.Gui.ScreenSpace.shproj", "{4A8F3D24-0D2C-4D1A-8D71-5FC6A0BE03AA}"
+EndProject
+Project("{D954291E-2A0B-460D-934E-DC6B0785DB48}") = "Adk.Gui", "Adk.Gui\Adk.Gui.shproj", "{5D175573-C301-4CB0-B4B1-88CBE2D6A81E}"
+EndProject
 Project("{D954291E-2A0B-460D-934E-DC6B0785DB48}") = "Adk.Image", "Adk.Image\Adk.Image.shproj", "{87FDC905-A339-4758-885F-0B2B5199F7E7}"
 EndProject
 Project("{D954291E-2A0B-460D-934E-DC6B0785DB48}") = "Adk.Compression", "Adk.Compression\Adk.Compression.shproj", "{3B928576-FDC2-4D82-9FF5-E65B218D37FB}"
@@ -14,6 +18,14 @@ Global
 		Release|x64 = Release|x64
 	EndGlobalSection
 	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{4A8F3D24-0D2C-4D1A-8D71-5FC6A0BE03AA}.Debug|x64.ActiveCfg = Debug|x64
+		{4A8F3D24-0D2C-4D1A-8D71-5FC6A0BE03AA}.Debug|x64.Build.0 = Debug|x64
+		{4A8F3D24-0D2C-4D1A-8D71-5FC6A0BE03AA}.Release|x64.ActiveCfg = Release|x64
+		{4A8F3D24-0D2C-4D1A-8D71-5FC6A0BE03AA}.Release|x64.Build.0 = Release|x64
+		{5D175573-C301-4CB0-B4B1-88CBE2D6A81E}.Debug|x64.ActiveCfg = Debug|x64
+		{5D175573-C301-4CB0-B4B1-88CBE2D6A81E}.Debug|x64.Build.0 = Debug|x64
+		{5D175573-C301-4CB0-B4B1-88CBE2D6A81E}.Release|x64.ActiveCfg = Release|x64
+		{5D175573-C301-4CB0-B4B1-88CBE2D6A81E}.Release|x64.Build.0 = Release|x64
 		{87FDC905-A339-4758-885F-0B2B5199F7E7}.Debug|x64.ActiveCfg = Debug|x64
 		{87FDC905-A339-4758-885F-0B2B5199F7E7}.Debug|x64.Build.0 = Debug|x64
 		{87FDC905-A339-4758-885F-0B2B5199F7E7}.Release|x64.ActiveCfg = Release|x64
