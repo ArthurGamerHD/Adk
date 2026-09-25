@@ -6,6 +6,8 @@ Project("{D954291E-2A0B-460D-934E-DC6B0785DB48}") = "Adk.Compression", "Adk.Comp
 EndProject
 Project("{D954291E-2A0B-460D-934E-DC6B0785DB48}") = "Adk.Audio", "Adk.Audio\Adk.Audio.shproj", "{8A3CDCC5-4B55-4D87-A415-698A0E1FF06F}"
 EndProject
+Project("{D954291E-2A0B-460D-934E-DC6B0785DB48}") = "Adk.Utils", "Adk.Utils\Adk.Utils.shproj", "{6C76B199-9CCE-42C4-8F8D-2408522DB966}"
+EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Adk.Analyzer", "Adk.Analyzer\Adk.Analyzer.csproj", "{A0987226-4F02-4E28-BCEB-5A6E99DB8C7C}"
 EndProject
 Global
@@ -26,6 +28,10 @@ Global
 		{8A3CDCC5-4B55-4D87-A415-698A0E1FF06F}.Debug|x64.Build.0 = Debug|x64
 		{8A3CDCC5-4B55-4D87-A415-698A0E1FF06F}.Release|x64.ActiveCfg = Release|x64
 		{8A3CDCC5-4B55-4D87-A415-698A0E1FF06F}.Release|x64.Build.0 = Release|x64
+		{6C76B199-9CCE-42C4-8F8D-2408522DB966}.Debug|x64.ActiveCfg = Debug|x64
+		{6C76B199-9CCE-42C4-8F8D-2408522DB966}.Debug|x64.Build.0 = Debug|x64
+		{6C76B199-9CCE-42C4-8F8D-2408522DB966}.Release|x64.ActiveCfg = Release|x64
+		{6C76B199-9CCE-42C4-8F8D-2408522DB966}.Release|x64.Build.0 = Release|x64
 		{A0987226-4F02-4E28-BCEB-5A6E99DB8C7C}.Debug|x64.ActiveCfg = Debug|x64
 		{A0987226-4F02-4E28-BCEB-5A6E99DB8C7C}.Debug|x64.Build.0 = Debug|x64
 		{A0987226-4F02-4E28-BCEB-5A6E99DB8C7C}.Release|x64.ActiveCfg = Release|x64

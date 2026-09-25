@@ -8,6 +8,7 @@
   <ItemGroup>
     <Compile Include="$(MSBuildThisFileDirectory)Dds\Bc7Encoder.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)Dds\DdsEncoder.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Dds\DdsDecoder.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)Dds\SpaceEngineersTextureProfiles.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)Imaging\ContentTexturePath.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)Imaging\DdsAverageColor.cs" />

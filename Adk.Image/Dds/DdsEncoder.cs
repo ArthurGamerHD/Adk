@@ -73,6 +73,11 @@ namespace Adk.Image.Dds
         const uint FourCcDx10 = 0x30315844u;
         const uint D3d10ResourceDimensionTexture2D = 3u;
 
+        const uint Bgra8RMask = 0x00ff0000u;
+        const uint Bgra8GMask = 0x0000ff00u;
+        const uint Bgra8BMask = 0x000000ffu;
+        const uint Bgra8AMask = 0xff000000u;
+
         sealed class StreamOutput : IDdsByteOutput
         {
             readonly Stream _stream;
@@ -117,6 +122,90 @@ namespace Adk.Image.Dds
             {
                 Buffer.BlockCopy(data, offset, _data, _offset, count);
                 _offset += count;
+            }
+        }
+
+        /// <summary>
+        /// Creates encoder options matching an encodable source DDS format and mip-count policy.
+        /// BC7 typeless, UNORM, and sRGB plus legacy 32-bit BGRA are supported. Other source
+        /// formats return false because this encoder cannot emit their compression format.
+        /// The source stream position is restored before returning.
+        /// </summary>
+        public static bool TryCreateMatchingOptions(Stream input, out DdsEncodeOptions options)
+        {
+            options = null;
+            if (input == null || !input.CanRead || !input.CanSeek)
+                return false;
+
+            long start = input.Position;
+            try
+            {
+                byte[] header = new byte[148];
+                if (!TryReadExactly(input, header, 0, 128) ||
+                    ReadUInt32(header, 0) != DdsMagic ||
+                    ReadUInt32(header, 4) != HeaderSize)
+                {
+                    return false;
+                }
+
+                uint pixelFormatFlags = ReadUInt32(header, 80);
+                uint fourCc = ReadUInt32(header, 84);
+                DdsOutputFormat format;
+
+                if ((pixelFormatFlags & DdpfFourCc) != 0 && fourCc == FourCcDx10)
+                {
+                    if (!TryReadExactly(input, header, 128, 20))
+                        return false;
+
+                    uint dxgiFormat = ReadUInt32(header, 128);
+                    if (dxgiFormat == (uint)DdsOutputFormat.Bc7Typeless)
+                        format = DdsOutputFormat.Bc7Typeless;
+                    else if (dxgiFormat == (uint)DdsOutputFormat.Bc7Unorm)
+                        format = DdsOutputFormat.Bc7Unorm;
+                    else if (dxgiFormat == (uint)DdsOutputFormat.Bc7UnormSrgb)
+                        format = DdsOutputFormat.Bc7UnormSrgb;
+                    else
+                        return false;
+                }
+                else if ((pixelFormatFlags & (DdpfRgb | DdpfAlphaPixels)) ==
+                         (DdpfRgb | DdpfAlphaPixels) &&
+                         ReadUInt32(header, 88) == 32u &&
+                         ReadUInt32(header, 92) == Bgra8RMask &&
+                         ReadUInt32(header, 96) == Bgra8GMask &&
+                         ReadUInt32(header, 100) == Bgra8BMask &&
+                         ReadUInt32(header, 104) == Bgra8AMask)
+                {
+                    format = DdsOutputFormat.LegacyBgra8;
+                }
+                else
+                {
+                    return false;
+                }
+
+                uint sourceMipCount = ReadUInt32(header, 28);
+                options = new DdsEncodeOptions
+                {
+                    Format = format,
+                    GenerateMipmaps = sourceMipCount > 1u,
+                    MaximumMipLevels = sourceMipCount > int.MaxValue ? int.MaxValue : (int)sourceMipCount
+                };
+                return true;
+            }
+            catch
+            {
+                options = null;
+                return false;
+            }
+            finally
+            {
+                try
+                {
+                    input.Position = start;
+                }
+                catch
+                {
+                    // Position restoration is best effort only.
+                }
             }
         }
 
@@ -426,10 +515,10 @@ namespace Adk.Image.Dds
                 WriteUInt32(header, ref offset, DdpfRgb | DdpfAlphaPixels);
                 WriteUInt32(header, ref offset, 0u);
                 WriteUInt32(header, ref offset, 32u);
-                WriteUInt32(header, ref offset, 0x00ff0000u);
-                WriteUInt32(header, ref offset, 0x0000ff00u);
-                WriteUInt32(header, ref offset, 0x000000ffu);
-                WriteUInt32(header, ref offset, 0xff000000u);
+                WriteUInt32(header, ref offset, Bgra8RMask);
+                WriteUInt32(header, ref offset, Bgra8GMask);
+                WriteUInt32(header, ref offset, Bgra8BMask);
+                WriteUInt32(header, ref offset, Bgra8AMask);
             }
             else
             {
@@ -480,6 +569,29 @@ namespace Adk.Image.Dds
                 height,
                 stride,
                 quality);
+        }
+
+        static bool TryReadExactly(Stream input, byte[] data, int offset, int count)
+        {
+            while (count > 0)
+            {
+                int read = input.Read(data, offset, count);
+                if (read <= 0)
+                    return false;
+
+                offset += read;
+                count -= read;
+            }
+
+            return true;
+        }
+
+        static uint ReadUInt32(byte[] data, int offset)
+        {
+            return (uint)(data[offset] |
+                          (data[offset + 1] << 8) |
+                          (data[offset + 2] << 16) |
+                          (data[offset + 3] << 24));
         }
 
         static void WriteLegacyBgraLevel(

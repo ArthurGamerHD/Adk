@@ -43,6 +43,10 @@ namespace Generated
 
     public partial class NetworkManager : IDisposable, ISingleton<NetworkManager>
     {
+        private static readonly string Prefix = GetPrefix();
+
+        private static string GetPrefix() => MyAPIGateway.Utilities.GamePaths.ModScopeName.Split('_').Last();
+    
         const int NETWORK_FRAGMENT_ID = 127;
         static readonly long FragmentAssemblyExpiryTicks = TimeSpan.TicksPerSecond * 15;
 
@@ -99,7 +103,7 @@ namespace Generated
             if (!SendToServer(raw))
             {
                 MyLog.Default.WriteLineAndConsole(
-                    $"[ADK.Network] Failed to send packet {data.Id} to server ({raw.Length} bytes)");
+                    $"[{Prefix}] Failed to send packet {data.Id} to server ({raw.Length} bytes)");
             }
         }
 
@@ -111,7 +115,7 @@ namespace Generated
             if (!SendToPlayer(raw, playerId))
             {
                 MyLog.Default.WriteLineAndConsole(
-                    $"[ADK.Network] Failed to send packet {data.Id} to player {playerId} ({raw.Length} bytes)");
+                    $"[{Prefix}] Failed to send packet {data.Id} to player {playerId} ({raw.Length} bytes)");
             }
         }
 
@@ -132,7 +136,7 @@ namespace Generated
             }
             catch (Exception e)
             {
-                MyLog.Default.WriteLineAndConsole($"[ADK.Network] Malformed packet from {id}!");
+                MyLog.Default.WriteLineAndConsole($"[{Prefix}] Malformed packet from {id}!");
                 MyLog.Default.WriteLineAndConsole($"{e.Message}\n{e.StackTrace}");
 
                 if (MyAPIGateway.Session?.Player != null)
@@ -165,7 +169,7 @@ namespace Generated
                 if (!isKnown)
                 {
                     MyLog.Default.WriteLineAndConsole(
-                        $"[ADK.Network] Unexpected packet ID {packet.Id}");
+                        $"[{Prefix}] Unexpected packet ID {packet.Id}");
                 }
             }
         }
@@ -190,7 +194,7 @@ namespace Generated
                 if (!SendToPlayer(raw, player.SteamUserId))
                 {
                     MyLog.Default.WriteLineAndConsole(
-                        $"[ADK.Network] Failed to forward packet {packet.Id} to player " +
+                        $"[{Prefix}] Failed to forward packet {packet.Id} to player " +
                         $"{player.SteamUserId} ({raw.Length} bytes)");
                 }
             }
@@ -224,7 +228,7 @@ namespace Generated
             var totalChunks = (raw.Length + Parameters.MaxWirePacketBytes - 1) /
                               Parameters.MaxWirePacketBytes;
             MyLog.Default.WriteLineAndConsole(
-                $"[ADK.Network] Sending fragmented packet {transferId} " +
+                $"[{Prefix}] Sending fragmented packet {transferId} " +
                 $"({raw.Length} bytes, {totalChunks} chunks)");
 
             for (var chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++)
@@ -299,7 +303,7 @@ namespace Generated
             if (raw != null)
             {
                 MyLog.Default.WriteLineAndConsole(
-                    $"[ADK.Network] Reassembled fragmented packet {fragment.TransferId} " +
+                    $"[{Prefix}] Reassembled fragmented packet {fragment.TransferId} " +
                     $"from {senderId} ({raw.Length} bytes)");
             }
 
