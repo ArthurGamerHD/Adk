@@ -12,7 +12,7 @@ namespace Adk.Image.Dds
 
     /// <summary>
     /// Quality/speed tradeoff for the pure managed BC7 encoder.
-    /// Both modes emit legal BC7 mode-6 blocks, which preserve RGBA.
+    /// The encoder automatically selects between BC7 modes 4, 5, and 6 per block.
     /// </summary>
     public enum Bc7Quality
     {
@@ -21,13 +21,19 @@ namespace Adk.Image.Dds
     }
 
     /// <summary>
-    /// Small, allocation-conscious BC7 mode-6 encoder intended for the
-    /// Space Engineers ModAPI runtime.  It does not use unsafe code, SIMD,
-    /// reflection, native DLLs, tasks, or APIs outside the normal ModAPI
-    /// whitelist surface used by Adk.
+    /// Small, allocation-conscious BC7 encoder intended for the Space Engineers
+    /// ModAPI runtime. It does not use unsafe code, SIMD, reflection, native DLLs,
+    /// tasks, or APIs outside the normal ModAPI whitelist surface used by Adk.
+    ///
+    /// Modes 4 and 5 encode the vector (normally RGB) and scalar (normally alpha)
+    /// channels with independent selector streams. Mode 6 is retained for blocks
+    /// where one shared RGBA interpolation line is a better fit. The best legal
+    /// candidate is selected independently for every 4x4 block.
     /// </summary>
     public static class Bc7Encoder
     {
+        static readonly int[] Weights2 = { 0, 21, 43, 64 };
+        static readonly int[] Weights3 = { 0, 9, 18, 27, 37, 46, 55, 64 };
         static readonly int[] Weights4 =
         {
             0, 4, 9, 13, 17, 21, 26, 30,
@@ -37,15 +43,27 @@ namespace Adk.Image.Dds
         sealed class Scratch
         {
             public readonly int[] Pixels = new int[16 * 4];
+            public readonly int[] RotatedPixels = new int[16 * 4];
+
             public readonly int[] Endpoint0 = new int[4];
             public readonly int[] Endpoint1 = new int[4];
             public readonly int[] Quantized0 = new int[4];
             public readonly int[] Quantized1 = new int[4];
             public readonly int[] Decoded0 = new int[4];
             public readonly int[] Decoded1 = new int[4];
+
+            public readonly int[] VectorPalette = new int[8 * 3];
+            public readonly int[] ScalarPalette = new int[8];
             public readonly int[] Palette = new int[16 * 4];
+
             public readonly int[] Indices = new int[16];
+            public readonly int[] VectorIndices = new int[16];
+            public readonly int[] ScalarIndices = new int[16];
+
+            public readonly byte[] CandidateBlock = new byte[16];
+            public readonly byte[] BestBlock = new byte[16];
             public readonly byte[] Block = new byte[16];
+            public long BestError;
         }
 
         sealed class StreamByteOutput : IDdsByteOutput
@@ -227,7 +245,225 @@ namespace Adk.Image.Dds
             Scratch scratch)
         {
             LoadBlock(rgba, width, height, stride, baseX, baseY, scratch.Pixels);
+            scratch.BestError = long.MaxValue;
 
+            EncodeMode6Candidate(scratch, quality);
+
+            // Modes 4 and 5 can rotate R/G/B into the independently indexed scalar
+            // channel. Trying all rotations is important for masks, packed maps, and
+            // recolored UI textures where alpha is not necessarily the only channel
+            // whose distribution differs from the other three.
+            for (int rotation = 0; rotation < 4; rotation++)
+            {
+                RotatePixelsForEncoding(scratch.Pixels, scratch.RotatedPixels, rotation);
+
+                // Mode 4 has one 2-bit selector set and one 3-bit selector set.
+                // The index-selection bit decides which one belongs to the vector.
+                EncodeMode4Candidate(scratch, quality, rotation, 0);
+                EncodeMode4Candidate(scratch, quality, rotation, 1);
+                EncodeMode5Candidate(scratch, quality, rotation);
+            }
+
+            Buffer.BlockCopy(scratch.BestBlock, 0, scratch.Block, 0, 16);
+        }
+
+        static void EncodeMode4Candidate(Scratch scratch, Bc7Quality quality, int rotation, int indexSelection)
+        {
+            int vectorIndexBits = indexSelection == 0 ? 2 : 3;
+            int scalarIndexBits = indexSelection == 0 ? 3 : 2;
+
+            InitializeSeparatedEndpoints(scratch.RotatedPixels, scratch.Endpoint0, scratch.Endpoint1);
+            QuantizeSeparatedEndpoints(
+                scratch.Endpoint0,
+                scratch.Endpoint1,
+                5,
+                6,
+                scratch.Quantized0,
+                scratch.Quantized1,
+                scratch.Decoded0,
+                scratch.Decoded1);
+
+            AssignSeparatedIndices(
+                scratch.RotatedPixels,
+                scratch.Decoded0,
+                scratch.Decoded1,
+                vectorIndexBits,
+                scalarIndexBits,
+                scratch.VectorIndices,
+                scratch.ScalarIndices,
+                scratch.VectorPalette,
+                scratch.ScalarPalette);
+
+            if (quality == Bc7Quality.Balanced)
+            {
+                FitSeparatedEndpoints(
+                    scratch.RotatedPixels,
+                    scratch.VectorIndices,
+                    scratch.ScalarIndices,
+                    vectorIndexBits,
+                    scalarIndexBits,
+                    scratch.Endpoint0,
+                    scratch.Endpoint1);
+                QuantizeSeparatedEndpoints(
+                    scratch.Endpoint0,
+                    scratch.Endpoint1,
+                    5,
+                    6,
+                    scratch.Quantized0,
+                    scratch.Quantized1,
+                    scratch.Decoded0,
+                    scratch.Decoded1);
+                AssignSeparatedIndices(
+                    scratch.RotatedPixels,
+                    scratch.Decoded0,
+                    scratch.Decoded1,
+                    vectorIndexBits,
+                    scalarIndexBits,
+                    scratch.VectorIndices,
+                    scratch.ScalarIndices,
+                    scratch.VectorPalette,
+                    scratch.ScalarPalette);
+            }
+
+            NormalizeSeparatedAnchor(
+                scratch.Quantized0,
+                scratch.Quantized1,
+                scratch.Decoded0,
+                scratch.Decoded1,
+                scratch.VectorIndices,
+                vectorIndexBits,
+                0,
+                3);
+            NormalizeSeparatedAnchor(
+                scratch.Quantized0,
+                scratch.Quantized1,
+                scratch.Decoded0,
+                scratch.Decoded1,
+                scratch.ScalarIndices,
+                scalarIndexBits,
+                3,
+                1);
+
+            PackMode4(
+                scratch.Quantized0,
+                scratch.Quantized1,
+                rotation,
+                indexSelection,
+                scratch.VectorIndices,
+                scratch.ScalarIndices,
+                scratch.CandidateBlock);
+
+            long error = ComputeSeparatedError(
+                scratch.Pixels,
+                scratch.Decoded0,
+                scratch.Decoded1,
+                scratch.VectorIndices,
+                scratch.ScalarIndices,
+                vectorIndexBits,
+                scalarIndexBits,
+                rotation);
+            KeepBestCandidate(scratch, error);
+        }
+
+        static void EncodeMode5Candidate(Scratch scratch, Bc7Quality quality, int rotation)
+        {
+            const int vectorIndexBits = 2;
+            const int scalarIndexBits = 2;
+
+            InitializeSeparatedEndpoints(scratch.RotatedPixels, scratch.Endpoint0, scratch.Endpoint1);
+            QuantizeSeparatedEndpoints(
+                scratch.Endpoint0,
+                scratch.Endpoint1,
+                7,
+                8,
+                scratch.Quantized0,
+                scratch.Quantized1,
+                scratch.Decoded0,
+                scratch.Decoded1);
+
+            AssignSeparatedIndices(
+                scratch.RotatedPixels,
+                scratch.Decoded0,
+                scratch.Decoded1,
+                vectorIndexBits,
+                scalarIndexBits,
+                scratch.VectorIndices,
+                scratch.ScalarIndices,
+                scratch.VectorPalette,
+                scratch.ScalarPalette);
+
+            if (quality == Bc7Quality.Balanced)
+            {
+                FitSeparatedEndpoints(
+                    scratch.RotatedPixels,
+                    scratch.VectorIndices,
+                    scratch.ScalarIndices,
+                    vectorIndexBits,
+                    scalarIndexBits,
+                    scratch.Endpoint0,
+                    scratch.Endpoint1);
+                QuantizeSeparatedEndpoints(
+                    scratch.Endpoint0,
+                    scratch.Endpoint1,
+                    7,
+                    8,
+                    scratch.Quantized0,
+                    scratch.Quantized1,
+                    scratch.Decoded0,
+                    scratch.Decoded1);
+                AssignSeparatedIndices(
+                    scratch.RotatedPixels,
+                    scratch.Decoded0,
+                    scratch.Decoded1,
+                    vectorIndexBits,
+                    scalarIndexBits,
+                    scratch.VectorIndices,
+                    scratch.ScalarIndices,
+                    scratch.VectorPalette,
+                    scratch.ScalarPalette);
+            }
+
+            NormalizeSeparatedAnchor(
+                scratch.Quantized0,
+                scratch.Quantized1,
+                scratch.Decoded0,
+                scratch.Decoded1,
+                scratch.VectorIndices,
+                vectorIndexBits,
+                0,
+                3);
+            NormalizeSeparatedAnchor(
+                scratch.Quantized0,
+                scratch.Quantized1,
+                scratch.Decoded0,
+                scratch.Decoded1,
+                scratch.ScalarIndices,
+                scalarIndexBits,
+                3,
+                1);
+
+            PackMode5(
+                scratch.Quantized0,
+                scratch.Quantized1,
+                rotation,
+                scratch.VectorIndices,
+                scratch.ScalarIndices,
+                scratch.CandidateBlock);
+
+            long error = ComputeSeparatedError(
+                scratch.Pixels,
+                scratch.Decoded0,
+                scratch.Decoded1,
+                scratch.VectorIndices,
+                scratch.ScalarIndices,
+                vectorIndexBits,
+                scalarIndexBits,
+                rotation);
+            KeepBestCandidate(scratch, error);
+        }
+
+        static void EncodeMode6Candidate(Scratch scratch, Bc7Quality quality)
+        {
             int firstExtreme = FindFarthestPixel(scratch.Pixels, 0);
             int secondExtreme = FindFarthestPixel(scratch.Pixels, firstExtreme);
             CopyPixel(scratch.Pixels, firstExtreme, scratch.Endpoint0);
@@ -235,19 +471,11 @@ namespace Adk.Image.Dds
 
             int p0;
             int p1;
-            QuantizeEndpoint(
-                scratch.Endpoint0,
-                scratch.Quantized0,
-                scratch.Decoded0,
-                out p0);
-            QuantizeEndpoint(
-                scratch.Endpoint1,
-                scratch.Quantized1,
-                scratch.Decoded1,
-                out p1);
+            QuantizeMode6Endpoint(scratch.Endpoint0, scratch.Quantized0, scratch.Decoded0, out p0);
+            QuantizeMode6Endpoint(scratch.Endpoint1, scratch.Quantized1, scratch.Decoded1, out p1);
 
-            BuildPalette(scratch.Decoded0, scratch.Decoded1, scratch.Palette);
-            AssignIndices(
+            BuildMode6Palette(scratch.Decoded0, scratch.Decoded1, scratch.Palette);
+            AssignMode6Indices(
                 scratch.Pixels,
                 scratch.Decoded0,
                 scratch.Decoded1,
@@ -257,19 +485,11 @@ namespace Adk.Image.Dds
 
             if (quality == Bc7Quality.Balanced)
             {
-                FitEndpoints(scratch.Pixels, scratch.Indices, scratch.Endpoint0, scratch.Endpoint1);
-                QuantizeEndpoint(
-                    scratch.Endpoint0,
-                    scratch.Quantized0,
-                    scratch.Decoded0,
-                    out p0);
-                QuantizeEndpoint(
-                    scratch.Endpoint1,
-                    scratch.Quantized1,
-                    scratch.Decoded1,
-                    out p1);
-                BuildPalette(scratch.Decoded0, scratch.Decoded1, scratch.Palette);
-                AssignIndices(
+                FitMode6Endpoints(scratch.Pixels, scratch.Indices, scratch.Endpoint0, scratch.Endpoint1);
+                QuantizeMode6Endpoint(scratch.Endpoint0, scratch.Quantized0, scratch.Decoded0, out p0);
+                QuantizeMode6Endpoint(scratch.Endpoint1, scratch.Quantized1, scratch.Decoded1, out p1);
+                BuildMode6Palette(scratch.Decoded0, scratch.Decoded1, scratch.Palette);
+                AssignMode6Indices(
                     scratch.Pixels,
                     scratch.Decoded0,
                     scratch.Decoded1,
@@ -278,13 +498,10 @@ namespace Adk.Image.Dds
                     2);
             }
 
-            // Mode 6 stores only three bits for the subset-0 anchor selector
-            // (texel 0).  If its optimal selector has the high bit set, reverse
-            // the endpoints and mirror all selectors.  The decoded palette is
-            // identical because BC7 mode-6 weights are symmetric.
             if (scratch.Indices[0] >= 8)
             {
-                SwapEndpointArrays(scratch.Quantized0, scratch.Quantized1);
+                SwapEndpointArrays(scratch.Quantized0, scratch.Quantized1, 0, 4);
+                SwapEndpointArrays(scratch.Decoded0, scratch.Decoded1, 0, 4);
                 int temporary = p0;
                 p0 = p1;
                 p1 = temporary;
@@ -298,7 +515,19 @@ namespace Adk.Image.Dds
                 p0,
                 p1,
                 scratch.Indices,
-                scratch.Block);
+                scratch.CandidateBlock);
+
+            long error = ComputeMode6Error(scratch.Pixels, scratch.Decoded0, scratch.Decoded1, scratch.Indices);
+            KeepBestCandidate(scratch, error);
+        }
+
+        static void KeepBestCandidate(Scratch scratch, long error)
+        {
+            if (error >= scratch.BestError)
+                return;
+
+            scratch.BestError = error;
+            Buffer.BlockCopy(scratch.CandidateBlock, 0, scratch.BestBlock, 0, 16);
         }
 
         static void LoadBlock(
@@ -329,6 +558,357 @@ namespace Adk.Image.Dds
                     pixels[destination++] = rgba[source + 3];
                 }
             }
+        }
+
+        static void RotatePixelsForEncoding(int[] source, int[] destination, int rotation)
+        {
+            for (int pixel = 0; pixel < 16; pixel++)
+            {
+                int offset = pixel * 4;
+                destination[offset] = source[offset];
+                destination[offset + 1] = source[offset + 1];
+                destination[offset + 2] = source[offset + 2];
+                destination[offset + 3] = source[offset + 3];
+
+                if (rotation != 0)
+                {
+                    int channel = rotation - 1;
+                    int temporary = destination[offset + channel];
+                    destination[offset + channel] = destination[offset + 3];
+                    destination[offset + 3] = temporary;
+                }
+            }
+        }
+
+        static void InitializeSeparatedEndpoints(int[] pixels, int[] endpoint0, int[] endpoint1)
+        {
+            int firstExtreme = FindFarthestVectorPixel(pixels, 0);
+            int secondExtreme = FindFarthestVectorPixel(pixels, firstExtreme);
+            int firstOffset = firstExtreme * 4;
+            int secondOffset = secondExtreme * 4;
+
+            endpoint0[0] = pixels[firstOffset];
+            endpoint0[1] = pixels[firstOffset + 1];
+            endpoint0[2] = pixels[firstOffset + 2];
+            endpoint1[0] = pixels[secondOffset];
+            endpoint1[1] = pixels[secondOffset + 1];
+            endpoint1[2] = pixels[secondOffset + 2];
+
+            int minimum = 255;
+            int maximum = 0;
+            for (int pixel = 0; pixel < 16; pixel++)
+            {
+                int scalar = pixels[pixel * 4 + 3];
+                if (scalar < minimum)
+                    minimum = scalar;
+                if (scalar > maximum)
+                    maximum = scalar;
+            }
+
+            endpoint0[3] = minimum;
+            endpoint1[3] = maximum;
+        }
+
+        static int FindFarthestVectorPixel(int[] pixels, int fromPixel)
+        {
+            int from = fromPixel * 4;
+            int bestPixel = 0;
+            long bestDistance = -1L;
+            for (int pixel = 0; pixel < 16; pixel++)
+            {
+                int offset = pixel * 4;
+                long d0 = pixels[offset] - pixels[from];
+                long d1 = pixels[offset + 1] - pixels[from + 1];
+                long d2 = pixels[offset + 2] - pixels[from + 2];
+                long distance = d0 * d0 + d1 * d1 + d2 * d2;
+                if (distance > bestDistance)
+                {
+                    bestDistance = distance;
+                    bestPixel = pixel;
+                }
+            }
+
+            return bestPixel;
+        }
+
+        static void QuantizeSeparatedEndpoints(
+            int[] endpoint0,
+            int[] endpoint1,
+            int vectorBits,
+            int scalarBits,
+            int[] quantized0,
+            int[] quantized1,
+            int[] decoded0,
+            int[] decoded1)
+        {
+            for (int channel = 0; channel < 3; channel++)
+            {
+                QuantizeComponent(endpoint0[channel], vectorBits, out quantized0[channel], out decoded0[channel]);
+                QuantizeComponent(endpoint1[channel], vectorBits, out quantized1[channel], out decoded1[channel]);
+            }
+
+            QuantizeComponent(endpoint0[3], scalarBits, out quantized0[3], out decoded0[3]);
+            QuantizeComponent(endpoint1[3], scalarBits, out quantized1[3], out decoded1[3]);
+        }
+
+        static void QuantizeComponent(int value, int bits, out int quantized, out int decoded)
+        {
+            value = ClampByte(value);
+            if (bits >= 8)
+            {
+                quantized = value;
+                decoded = value;
+                return;
+            }
+
+            int maximum = (1 << bits) - 1;
+            int bestQuantized = 0;
+            int bestDecoded = 0;
+            int bestError = int.MaxValue;
+            int estimate = (value * maximum + 127) / 255;
+            int first = estimate - 1;
+            int last = estimate + 1;
+            if (first < 0)
+                first = 0;
+            if (last > maximum)
+                last = maximum;
+
+            for (int candidate = first; candidate <= last; candidate++)
+            {
+                int reconstructed = ExpandEndpoint(candidate, bits);
+                int error = value - reconstructed;
+                error *= error;
+                if (error < bestError)
+                {
+                    bestError = error;
+                    bestQuantized = candidate;
+                    bestDecoded = reconstructed;
+                }
+            }
+
+            quantized = bestQuantized;
+            decoded = bestDecoded;
+        }
+
+        static int ExpandEndpoint(int value, int bits)
+        {
+            if (bits >= 8)
+                return value & 255;
+
+            int expanded = value << (8 - bits);
+            expanded |= value >> (2 * bits - 8);
+            return expanded & 255;
+        }
+
+        static void AssignSeparatedIndices(
+            int[] pixels,
+            int[] endpoint0,
+            int[] endpoint1,
+            int vectorIndexBits,
+            int scalarIndexBits,
+            int[] vectorIndices,
+            int[] scalarIndices,
+            int[] vectorPalette,
+            int[] scalarPalette)
+        {
+            int[] vectorWeights = GetWeights(vectorIndexBits);
+            int[] scalarWeights = GetWeights(scalarIndexBits);
+            int vectorCount = 1 << vectorIndexBits;
+            int scalarCount = 1 << scalarIndexBits;
+
+            for (int index = 0; index < vectorCount; index++)
+            {
+                int weight = vectorWeights[index];
+                int inverseWeight = 64 - weight;
+                int paletteOffset = index * 3;
+                vectorPalette[paletteOffset] =
+                    (inverseWeight * endpoint0[0] + weight * endpoint1[0] + 32) >> 6;
+                vectorPalette[paletteOffset + 1] =
+                    (inverseWeight * endpoint0[1] + weight * endpoint1[1] + 32) >> 6;
+                vectorPalette[paletteOffset + 2] =
+                    (inverseWeight * endpoint0[2] + weight * endpoint1[2] + 32) >> 6;
+            }
+
+            for (int index = 0; index < scalarCount; index++)
+            {
+                int weight = scalarWeights[index];
+                int inverseWeight = 64 - weight;
+                scalarPalette[index] =
+                    (inverseWeight * endpoint0[3] + weight * endpoint1[3] + 32) >> 6;
+            }
+
+            for (int pixel = 0; pixel < 16; pixel++)
+            {
+                int pixelOffset = pixel * 4;
+                long bestVectorError = long.MaxValue;
+                int bestVectorIndex = 0;
+                for (int index = 0; index < vectorCount; index++)
+                {
+                    int paletteOffset = index * 3;
+                    long d0 = pixels[pixelOffset] - vectorPalette[paletteOffset];
+                    long d1 = pixels[pixelOffset + 1] - vectorPalette[paletteOffset + 1];
+                    long d2 = pixels[pixelOffset + 2] - vectorPalette[paletteOffset + 2];
+                    long error = d0 * d0 + d1 * d1 + d2 * d2;
+                    if (error < bestVectorError)
+                    {
+                        bestVectorError = error;
+                        bestVectorIndex = index;
+                    }
+                }
+
+                long bestScalarError = long.MaxValue;
+                int bestScalarIndex = 0;
+                for (int index = 0; index < scalarCount; index++)
+                {
+                    long difference = pixels[pixelOffset + 3] - scalarPalette[index];
+                    long error = difference * difference;
+                    if (error < bestScalarError)
+                    {
+                        bestScalarError = error;
+                        bestScalarIndex = index;
+                    }
+                }
+
+                vectorIndices[pixel] = bestVectorIndex;
+                scalarIndices[pixel] = bestScalarIndex;
+            }
+        }
+
+        static void FitSeparatedEndpoints(
+            int[] pixels,
+            int[] vectorIndices,
+            int[] scalarIndices,
+            int vectorIndexBits,
+            int scalarIndexBits,
+            int[] endpoint0,
+            int[] endpoint1)
+        {
+            int[] vectorWeights = GetWeights(vectorIndexBits);
+            int[] scalarWeights = GetWeights(scalarIndexBits);
+
+            for (int channel = 0; channel < 3; channel++)
+                FitOneChannel(pixels, channel, vectorIndices, vectorWeights, endpoint0, endpoint1);
+            FitOneChannel(pixels, 3, scalarIndices, scalarWeights, endpoint0, endpoint1);
+        }
+
+        static void FitOneChannel(
+            int[] pixels,
+            int channel,
+            int[] indices,
+            int[] weights,
+            int[] endpoint0,
+            int[] endpoint1)
+        {
+            long saa = 0L;
+            long sab = 0L;
+            long sbb = 0L;
+            long say = 0L;
+            long sby = 0L;
+
+            for (int pixel = 0; pixel < 16; pixel++)
+            {
+                int weightB = weights[indices[pixel]];
+                int weightA = 64 - weightB;
+                long value = (long)pixels[pixel * 4 + channel] * 64L;
+                saa += (long)weightA * weightA;
+                sab += (long)weightA * weightB;
+                sbb += (long)weightB * weightB;
+                say += weightA * value;
+                sby += weightB * value;
+            }
+
+            long determinant = saa * sbb - sab * sab;
+            if (determinant <= 0L)
+                return;
+
+            endpoint0[channel] = SolveEndpoint(say, sby, sbb, sab, determinant);
+            endpoint1[channel] = SolveEndpoint(sby, say, saa, sab, determinant);
+        }
+
+        static void NormalizeSeparatedAnchor(
+            int[] quantized0,
+            int[] quantized1,
+            int[] decoded0,
+            int[] decoded1,
+            int[] indices,
+            int indexBits,
+            int firstChannel,
+            int channelCount)
+        {
+            int half = 1 << (indexBits - 1);
+            if (indices[0] < half)
+                return;
+
+            SwapEndpointArrays(quantized0, quantized1, firstChannel, channelCount);
+            SwapEndpointArrays(decoded0, decoded1, firstChannel, channelCount);
+            int maximum = (1 << indexBits) - 1;
+            for (int pixel = 0; pixel < 16; pixel++)
+                indices[pixel] = maximum - indices[pixel];
+        }
+
+        static long ComputeSeparatedError(
+            int[] originalPixels,
+            int[] endpoint0,
+            int[] endpoint1,
+            int[] vectorIndices,
+            int[] scalarIndices,
+            int vectorIndexBits,
+            int scalarIndexBits,
+            int rotation)
+        {
+            int[] vectorWeights = GetWeights(vectorIndexBits);
+            int[] scalarWeights = GetWeights(scalarIndexBits);
+            long error = 0L;
+
+            for (int pixel = 0; pixel < 16; pixel++)
+            {
+                int vectorWeight = vectorWeights[vectorIndices[pixel]];
+                int vectorInverse = 64 - vectorWeight;
+                int scalarWeight = scalarWeights[scalarIndices[pixel]];
+                int scalarInverse = 64 - scalarWeight;
+
+                int r = (vectorInverse * endpoint0[0] + vectorWeight * endpoint1[0] + 32) >> 6;
+                int g = (vectorInverse * endpoint0[1] + vectorWeight * endpoint1[1] + 32) >> 6;
+                int b = (vectorInverse * endpoint0[2] + vectorWeight * endpoint1[2] + 32) >> 6;
+                int a = (scalarInverse * endpoint0[3] + scalarWeight * endpoint1[3] + 32) >> 6;
+
+                if (rotation == 1)
+                {
+                    int temporary = a;
+                    a = r;
+                    r = temporary;
+                }
+                else if (rotation == 2)
+                {
+                    int temporary = a;
+                    a = g;
+                    g = temporary;
+                }
+                else if (rotation == 3)
+                {
+                    int temporary = a;
+                    a = b;
+                    b = temporary;
+                }
+
+                int offset = pixel * 4;
+                long dr = originalPixels[offset] - r;
+                long dg = originalPixels[offset + 1] - g;
+                long db = originalPixels[offset + 2] - b;
+                long da = originalPixels[offset + 3] - a;
+                error += dr * dr + dg * dg + db * db + da * da;
+            }
+
+            return error;
+        }
+
+        static int[] GetWeights(int indexBits)
+        {
+            if (indexBits == 2)
+                return Weights2;
+            if (indexBits == 3)
+                return Weights3;
+            return Weights4;
         }
 
         static int FindFarthestPixel(int[] pixels, int fromPixel)
@@ -363,11 +943,7 @@ namespace Adk.Image.Dds
             endpoint[3] = pixels[offset + 3];
         }
 
-        static void QuantizeEndpoint(
-            int[] endpoint,
-            int[] quantized,
-            int[] decoded,
-            out int pbit)
+        static void QuantizeMode6Endpoint(int[] endpoint, int[] quantized, int[] decoded, out int pbit)
         {
             long bestError = long.MaxValue;
             int bestPbit = 0;
@@ -408,25 +984,21 @@ namespace Adk.Image.Dds
             }
         }
 
-        static void BuildPalette(int[] endpoint0, int[] endpoint1, int[] palette)
+        static void BuildMode6Palette(int[] endpoint0, int[] endpoint1, int[] palette)
         {
             for (int index = 0; index < 16; index++)
             {
                 int weight = Weights4[index];
                 int inverseWeight = 64 - weight;
                 int offset = index * 4;
-                palette[offset] =
-                    (inverseWeight * endpoint0[0] + weight * endpoint1[0] + 32) >> 6;
-                palette[offset + 1] =
-                    (inverseWeight * endpoint0[1] + weight * endpoint1[1] + 32) >> 6;
-                palette[offset + 2] =
-                    (inverseWeight * endpoint0[2] + weight * endpoint1[2] + 32) >> 6;
-                palette[offset + 3] =
-                    (inverseWeight * endpoint0[3] + weight * endpoint1[3] + 32) >> 6;
+                palette[offset] = (inverseWeight * endpoint0[0] + weight * endpoint1[0] + 32) >> 6;
+                palette[offset + 1] = (inverseWeight * endpoint0[1] + weight * endpoint1[1] + 32) >> 6;
+                palette[offset + 2] = (inverseWeight * endpoint0[2] + weight * endpoint1[2] + 32) >> 6;
+                palette[offset + 3] = (inverseWeight * endpoint0[3] + weight * endpoint1[3] + 32) >> 6;
             }
         }
 
-        static void AssignIndices(
+        static void AssignMode6Indices(
             int[] pixels,
             int[] endpoint0,
             int[] endpoint1,
@@ -456,17 +1028,11 @@ namespace Adk.Image.Dds
                     long v3 = pixels[pixelOffset + 3] - endpoint0[3];
                     long numerator = v0 * d0 + v1 * d1 + v2 * d2 + v3 * d3;
                     if (numerator <= 0L)
-                    {
                         estimate = 0;
-                    }
                     else if (numerator >= denominator)
-                    {
                         estimate = 15;
-                    }
                     else
-                    {
                         estimate = (int)((numerator * 15L + denominator / 2L) / denominator);
-                    }
                 }
 
                 int first = estimate - searchRadius;
@@ -497,56 +1063,30 @@ namespace Adk.Image.Dds
             }
         }
 
-        static void FitEndpoints(int[] pixels, int[] indices, int[] endpoint0, int[] endpoint1)
+        static void FitMode6Endpoints(int[] pixels, int[] indices, int[] endpoint0, int[] endpoint1)
         {
-            long saa = 0L;
-            long sab = 0L;
-            long sbb = 0L;
-            long sayR = 0L;
-            long sayG = 0L;
-            long sayB = 0L;
-            long sayA = 0L;
-            long sbyR = 0L;
-            long sbyG = 0L;
-            long sbyB = 0L;
-            long sbyA = 0L;
+            for (int channel = 0; channel < 4; channel++)
+                FitOneChannel(pixels, channel, indices, Weights4, endpoint0, endpoint1);
+        }
 
+        static long ComputeMode6Error(int[] pixels, int[] endpoint0, int[] endpoint1, int[] indices)
+        {
+            long error = 0L;
             for (int pixel = 0; pixel < 16; pixel++)
             {
-                int weightB = Weights4[indices[pixel]];
-                int weightA = 64 - weightB;
-                saa += (long)weightA * weightA;
-                sab += (long)weightA * weightB;
-                sbb += (long)weightB * weightB;
-
+                int weight = Weights4[indices[pixel]];
+                int inverseWeight = 64 - weight;
                 int offset = pixel * 4;
-                long r = (long)pixels[offset] * 64L;
-                long g = (long)pixels[offset + 1] * 64L;
-                long b = (long)pixels[offset + 2] * 64L;
-                long a = (long)pixels[offset + 3] * 64L;
-                sayR += weightA * r;
-                sayG += weightA * g;
-                sayB += weightA * b;
-                sayA += weightA * a;
-                sbyR += weightB * r;
-                sbyG += weightB * g;
-                sbyB += weightB * b;
-                sbyA += weightB * a;
+                for (int channel = 0; channel < 4; channel++)
+                {
+                    int reconstructed =
+                        (inverseWeight * endpoint0[channel] + weight * endpoint1[channel] + 32) >> 6;
+                    long difference = pixels[offset + channel] - reconstructed;
+                    error += difference * difference;
+                }
             }
 
-            long determinant = saa * sbb - sab * sab;
-            if (determinant <= 0L)
-                return;
-
-            endpoint0[0] = SolveEndpoint(sayR, sbyR, sbb, sab, determinant);
-            endpoint0[1] = SolveEndpoint(sayG, sbyG, sbb, sab, determinant);
-            endpoint0[2] = SolveEndpoint(sayB, sbyB, sbb, sab, determinant);
-            endpoint0[3] = SolveEndpoint(sayA, sbyA, sbb, sab, determinant);
-
-            endpoint1[0] = SolveEndpoint(sbyR, sayR, saa, sab, determinant);
-            endpoint1[1] = SolveEndpoint(sbyG, sayG, saa, sab, determinant);
-            endpoint1[2] = SolveEndpoint(sbyB, sayB, saa, sab, determinant);
-            endpoint1[3] = SolveEndpoint(sbyA, sayA, saa, sab, determinant);
+            return error;
         }
 
         static int SolveEndpoint(long sy, long otherSy, long diagonal, long cross, long determinant)
@@ -557,9 +1097,10 @@ namespace Adk.Image.Dds
             return ClampByte((int)((numerator - determinant / 2L) / determinant));
         }
 
-        static void SwapEndpointArrays(int[] left, int[] right)
+        static void SwapEndpointArrays(int[] left, int[] right, int firstChannel, int channelCount)
         {
-            for (int channel = 0; channel < 4; channel++)
+            int last = firstChannel + channelCount;
+            for (int channel = firstChannel; channel < last; channel++)
             {
                 int temporary = left[channel];
                 left[channel] = right[channel];
@@ -576,6 +1117,72 @@ namespace Adk.Image.Dds
             return value;
         }
 
+        static void PackMode4(
+            int[] endpoint0,
+            int[] endpoint1,
+            int rotation,
+            int indexSelection,
+            int[] vectorIndices,
+            int[] scalarIndices,
+            byte[] output)
+        {
+            ulong low = 0UL;
+            ulong high = 0UL;
+            int bitPosition = 0;
+
+            // Mode 4 marker: 00001 (LSB first).
+            PutBits(ref low, ref high, ref bitPosition, 1u << 4, 5);
+            PutBits(ref low, ref high, ref bitPosition, (uint)rotation, 2);
+            PutBits(ref low, ref high, ref bitPosition, (uint)indexSelection, 1);
+
+            for (int channel = 0; channel < 3; channel++)
+            {
+                PutBits(ref low, ref high, ref bitPosition, (uint)endpoint0[channel], 5);
+                PutBits(ref low, ref high, ref bitPosition, (uint)endpoint1[channel], 5);
+            }
+            PutBits(ref low, ref high, ref bitPosition, (uint)endpoint0[3], 6);
+            PutBits(ref low, ref high, ref bitPosition, (uint)endpoint1[3], 6);
+
+            int[] primary = indexSelection == 0 ? vectorIndices : scalarIndices;
+            int[] secondary = indexSelection == 0 ? scalarIndices : vectorIndices;
+            PutIndexSet(ref low, ref high, ref bitPosition, primary, 2);
+            PutIndexSet(ref low, ref high, ref bitPosition, secondary, 3);
+
+            WriteUInt64LittleEndian(output, 0, low);
+            WriteUInt64LittleEndian(output, 8, high);
+        }
+
+        static void PackMode5(
+            int[] endpoint0,
+            int[] endpoint1,
+            int rotation,
+            int[] vectorIndices,
+            int[] scalarIndices,
+            byte[] output)
+        {
+            ulong low = 0UL;
+            ulong high = 0UL;
+            int bitPosition = 0;
+
+            // Mode 5 marker: 000001 (LSB first).
+            PutBits(ref low, ref high, ref bitPosition, 1u << 5, 6);
+            PutBits(ref low, ref high, ref bitPosition, (uint)rotation, 2);
+
+            for (int channel = 0; channel < 3; channel++)
+            {
+                PutBits(ref low, ref high, ref bitPosition, (uint)endpoint0[channel], 7);
+                PutBits(ref low, ref high, ref bitPosition, (uint)endpoint1[channel], 7);
+            }
+            PutBits(ref low, ref high, ref bitPosition, (uint)endpoint0[3], 8);
+            PutBits(ref low, ref high, ref bitPosition, (uint)endpoint1[3], 8);
+
+            PutIndexSet(ref low, ref high, ref bitPosition, vectorIndices, 2);
+            PutIndexSet(ref low, ref high, ref bitPosition, scalarIndices, 2);
+
+            WriteUInt64LittleEndian(output, 0, low);
+            WriteUInt64LittleEndian(output, 8, high);
+        }
+
         static void PackMode6(
             int[] endpoint0,
             int[] endpoint1,
@@ -588,7 +1195,6 @@ namespace Adk.Image.Dds
             ulong high = 0UL;
             int bitPosition = 0;
 
-            // BC7 mode marker: six zero bits followed by one bit.
             PutBits(ref low, ref high, ref bitPosition, 1u << 6, 7);
 
             PutBits(ref low, ref high, ref bitPosition, (uint)endpoint0[0], 7);
@@ -602,12 +1208,22 @@ namespace Adk.Image.Dds
             PutBits(ref low, ref high, ref bitPosition, (uint)p0, 1);
             PutBits(ref low, ref high, ref bitPosition, (uint)p1, 1);
 
-            PutBits(ref low, ref high, ref bitPosition, (uint)indices[0], 3);
-            for (int pixel = 1; pixel < 16; pixel++)
-                PutBits(ref low, ref high, ref bitPosition, (uint)indices[pixel], 4);
+            PutIndexSet(ref low, ref high, ref bitPosition, indices, 4);
 
             WriteUInt64LittleEndian(output, 0, low);
             WriteUInt64LittleEndian(output, 8, high);
+        }
+
+        static void PutIndexSet(
+            ref ulong low,
+            ref ulong high,
+            ref int bitPosition,
+            int[] indices,
+            int indexBits)
+        {
+            PutBits(ref low, ref high, ref bitPosition, (uint)indices[0], indexBits - 1);
+            for (int pixel = 1; pixel < 16; pixel++)
+                PutBits(ref low, ref high, ref bitPosition, (uint)indices[pixel], indexBits);
         }
 
         static void PutBits(
